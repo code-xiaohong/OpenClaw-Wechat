@@ -118,3 +118,34 @@ test("audio content type support helpers work for stt", () => {
     ".amr",
   );
 });
+
+test("resolveWecomProxyConfig prefers account config over channel/env", () => {
+  const proxy = core.resolveWecomProxyConfig({
+    channelConfig: {
+      outboundProxy: "http://channel-proxy:7890",
+    },
+    accountConfig: {
+      outboundProxy: "http://account-proxy:8899",
+    },
+    envVars: {
+      WECOM_PROXY: "http://env-proxy:7890",
+    },
+    processEnv: {},
+    accountId: "default",
+  });
+  assert.equal(proxy, "http://account-proxy:8899");
+});
+
+test("resolveWecomProxyConfig supports account-specific env fallback", () => {
+  const proxy = core.resolveWecomProxyConfig({
+    channelConfig: {},
+    accountConfig: {},
+    envVars: {
+      WECOM_SALES_PROXY: "http://sales-proxy:8080",
+      WECOM_PROXY: "http://global-proxy:7890",
+    },
+    processEnv: {},
+    accountId: "sales",
+  });
+  assert.equal(proxy, "http://sales-proxy:8080");
+});

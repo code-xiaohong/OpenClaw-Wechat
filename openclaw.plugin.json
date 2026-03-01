@@ -1,7 +1,7 @@
 {
   "id": "openclaw-wechat",
   "name": "OpenClaw-Wechat",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "WeCom (企业微信) channel plugin for OpenClaw (自建应用回调 + 发送 API).",
   "channels": [
     "wecom"
@@ -57,6 +57,10 @@
         "type": "string",
         "description": "Webhook 路径",
         "default": "/wecom/callback"
+      },
+      "outboundProxy": {
+        "type": "string",
+        "description": "可选：WeCom 出站 API 代理（如 http://127.0.0.1:7890）"
       },
       "voiceTranscription": {
         "type": "object",
@@ -185,6 +189,10 @@
             "webhookPath": {
               "type": "string",
               "default": "/wecom/callback"
+            },
+            "outboundProxy": {
+              "type": "string",
+              "description": "可选：该账户专用 WeCom 出站 API 代理（覆盖 channels.wecom.outboundProxy）"
             }
           },
           "required": [

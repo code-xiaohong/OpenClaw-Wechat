@@ -3,6 +3,10 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { ProxyAgent } from "undici";
+
+const PROXY_DISPATCHER_CACHE = new Map();
+const INVALID_PROXY_CACHE = new Set();
 
 function parseArgs(argv) {
   const out = {
@@ -123,6 +127,79 @@ function normalizeWebhookPath(raw, fallback = "/wecom/callback") {
   return input.startsWith("/") ? input : `/${input}`;
 }
 
+function isLikelyHttpProxyUrl(proxyUrl) {
+  return /^https?:\/\/\S+$/i.test(String(proxyUrl ?? "").trim());
+}
+
+function sanitizeProxyForLog(proxyUrl) {
+  const raw = String(proxyUrl ?? "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.username || parsed.password) {
+      parsed.username = "***";
+      parsed.password = "***";
+    }
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function isWecomApiUrl(url) {
+  const raw = String(url ?? "");
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    return parsed.hostname === "qyapi.weixin.qq.com";
+  } catch {
+    return raw.includes("qyapi.weixin.qq.com");
+  }
+}
+
+function readAccountProxyEnv(envVars, accountId) {
+  const normalizedId = normalizeAccountId(accountId);
+  const scopedKey = normalizedId === "default" ? null : `WECOM_${normalizedId.toUpperCase()}_PROXY`;
+  return String(
+    (scopedKey ? envVars?.[scopedKey] ?? process.env[scopedKey] : undefined) ??
+      envVars?.WECOM_PROXY ??
+      process.env.WECOM_PROXY ??
+      process.env.HTTPS_PROXY ??
+      process.env.HTTP_PROXY ??
+      "",
+  ).trim();
+}
+
+function resolveAccountProxy(config, resolved) {
+  const channelConfig = config?.channels?.wecom ?? {};
+  const envVars = config?.env?.vars ?? {};
+  const fromAccount = String(resolved?.outboundProxy ?? "").trim();
+  if (fromAccount) return fromAccount;
+  const fromChannel = String(channelConfig?.outboundProxy ?? "").trim();
+  if (fromChannel) return fromChannel;
+  const fromEnv = readAccountProxyEnv(envVars, resolved?.accountId ?? "default");
+  return fromEnv || "";
+}
+
+function attachProxyDispatcher(url, fetchOptions = {}, proxyUrl) {
+  if (!proxyUrl || !isWecomApiUrl(url) || fetchOptions.dispatcher) return fetchOptions;
+  const printableProxy = sanitizeProxyForLog(proxyUrl);
+  if (!isLikelyHttpProxyUrl(proxyUrl)) {
+    if (!INVALID_PROXY_CACHE.has(proxyUrl)) {
+      INVALID_PROXY_CACHE.add(proxyUrl);
+      console.warn(`WARN config.outboundProxy invalid: ${printableProxy}`);
+    }
+    return fetchOptions;
+  }
+  if (!PROXY_DISPATCHER_CACHE.has(proxyUrl)) {
+    PROXY_DISPATCHER_CACHE.set(proxyUrl, new ProxyAgent(proxyUrl));
+  }
+  return {
+    ...fetchOptions,
+    dispatcher: PROXY_DISPATCHER_CACHE.get(proxyUrl),
+  };
+}
+
 function collectOtherChannelWebhookPaths(config) {
   const rows = [];
   const channels = config?.channels;
@@ -210,6 +287,13 @@ function readAccountConfigFromEnv(envVars, accountId) {
   const callbackToken = String(readVar("CALLBACK_TOKEN") ?? "").trim();
   const callbackAesKey = String(readVar("CALLBACK_AES_KEY") ?? "").trim();
   const webhookPath = String(readVar("WEBHOOK_PATH") ?? "/wecom/callback").trim() || "/wecom/callback";
+  const outboundProxy = String(
+    readVar("PROXY") ??
+      (normalizedId === "default"
+        ? process.env.HTTPS_PROXY
+        : envVars?.WECOM_PROXY ?? process.env.WECOM_PROXY ?? process.env.HTTPS_PROXY) ??
+      "",
+  ).trim();
   const enabled = !isFalseLike(readVar("ENABLED"));
 
   if (!corpId || !corpSecret || !agentId) return null;
@@ -221,6 +305,7 @@ function readAccountConfigFromEnv(envVars, accountId) {
     callbackToken,
     callbackAesKey,
     webhookPath,
+    outboundProxy: outboundProxy || undefined,
     enabled,
     source: "env",
   };
@@ -235,6 +320,7 @@ function normalizeResolvedAccount(raw, accountId, source) {
   const callbackToken = String(raw.callbackToken ?? "").trim();
   const callbackAesKey = String(raw.callbackAesKey ?? "").trim();
   const webhookPath = String(raw.webhookPath ?? "/wecom/callback").trim() || "/wecom/callback";
+  const outboundProxy = String(raw.outboundProxy ?? raw.proxyUrl ?? raw.proxy ?? "").trim();
   const enabled = raw.enabled !== false;
   if (!corpId || !corpSecret || !agentId) return null;
   return {
@@ -245,6 +331,7 @@ function normalizeResolvedAccount(raw, accountId, source) {
     callbackToken,
     callbackAesKey,
     webhookPath,
+    outboundProxy: outboundProxy || undefined,
     enabled,
     source,
   };
@@ -320,11 +407,20 @@ function discoverAccountIds(config) {
   return ordered;
 }
 
-async function fetchJsonWithTimeout(url, timeoutMs) {
+async function fetchJsonWithTimeout(url, timeoutMs, proxyUrl = "") {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(
+      url,
+      attachProxyDispatcher(
+        url,
+        {
+          signal: controller.signal,
+        },
+        proxyUrl,
+      ),
+    );
     const text = await res.text();
     let json = null;
     try {
@@ -415,12 +511,24 @@ async function runAccountChecks({ config, accountId, args }) {
     ),
   );
 
+  const outboundProxy = resolveAccountProxy(config, resolved);
+  const proxyValid = !outboundProxy || isLikelyHttpProxyUrl(outboundProxy);
+  checks.push(
+    makeCheck(
+      "config.outboundProxy",
+      proxyValid,
+      outboundProxy
+        ? `configured (${sanitizeProxyForLog(outboundProxy)})`
+        : "not configured (direct access to qyapi.weixin.qq.com required)",
+    ),
+  );
+
   if (!args.skipNetwork && resolved.enabled !== false && resolved.corpId && resolved.corpSecret) {
     const tokenUrl =
       `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(resolved.corpId)}` +
       `&corpsecret=${encodeURIComponent(resolved.corpSecret)}`;
     try {
-      const tokenResp = await fetchJsonWithTimeout(tokenUrl, args.timeoutMs);
+      const tokenResp = await fetchJsonWithTimeout(tokenUrl, args.timeoutMs, outboundProxy);
       const token = tokenResp.json?.access_token;
       const errcode = Number(tokenResp.json?.errcode ?? -1);
       checks.push(
@@ -439,7 +547,7 @@ async function runAccountChecks({ config, accountId, args }) {
 
       if (token) {
         const cbIpUrl = `https://qyapi.weixin.qq.com/cgi-bin/getcallbackip?access_token=${encodeURIComponent(token)}`;
-        const cbIpResp = await fetchJsonWithTimeout(cbIpUrl, args.timeoutMs);
+        const cbIpResp = await fetchJsonWithTimeout(cbIpUrl, args.timeoutMs, outboundProxy);
         const cbErr = Number(cbIpResp.json?.errcode ?? -1);
         checks.push(
           makeCheck(
@@ -480,6 +588,7 @@ async function runAccountChecks({ config, accountId, args }) {
       source: resolved.source,
       enabled: resolved.enabled,
       webhookPath: resolved.webhookPath,
+      outboundProxy: outboundProxy ? sanitizeProxyForLog(outboundProxy) : null,
       fallbackFor: resolved.fallbackFor || null,
     },
     checks,
@@ -508,6 +617,7 @@ function reportAndExit(report, asJson = false) {
         `- resolved: ${meta.accountId} source=${meta.source}${meta.fallbackFor ? ` fallback-for=${meta.fallbackFor}` : ""}`,
       );
       console.log(`- webhookPath: ${meta.webhookPath}`);
+      console.log(`- outboundProxy: ${meta.outboundProxy || "(none)"}`);
     }
     for (const check of accountReport.checks) {
       console.log(`${check.ok ? "OK " : "FAIL"} ${check.name} :: ${check.detail}`);

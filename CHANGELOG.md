@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.4] - 2026-03-01
+
+### Added
+- 新增 WeCom API 出站代理支持：`channels.wecom.outboundProxy`、`channels.wecom.accounts.<id>.outboundProxy`
+- 新增环境变量代理支持：`WECOM_PROXY` 与 `WECOM_<ACCOUNT>_PROXY`
+- 新增代理配置解析测试，覆盖账户级/渠道级/环境变量优先级
+- 新增媒体回包自动判型：`deliverReply` 支持 `image/video/file`，并可基于 URL 后缀推断
+
+### Changed
+- 所有 WeCom API 调用链路（`gettoken`、消息发送、媒体下载/上传）统一接入代理能力
+- `/status` 命令新增代理状态提示（已启用/未启用）
+- 版本升级为 `0.4.4`
+
 ## [0.4.3] - 2026-03-01
 
 ### Added

@@ -163,6 +163,46 @@ function pickFirstNonEmptyString(...values) {
   return "";
 }
 
+function normalizeAccountIdForEnv(accountId) {
+  const normalized = String(accountId ?? "default").trim().toLowerCase();
+  return normalized || "default";
+}
+
+function readProxyEnv(envVars, processEnv, accountId = "default") {
+  const normalizedId = normalizeAccountIdForEnv(accountId);
+  const scopedProxyKey = normalizedId === "default" ? null : `WECOM_${normalizedId.toUpperCase()}_PROXY`;
+  return pickFirstNonEmptyString(
+    scopedProxyKey ? envVars?.[scopedProxyKey] : undefined,
+    scopedProxyKey ? processEnv?.[scopedProxyKey] : undefined,
+    envVars?.WECOM_PROXY,
+    processEnv?.WECOM_PROXY,
+    processEnv?.HTTPS_PROXY,
+    processEnv?.HTTP_PROXY,
+  );
+}
+
+export function resolveWecomProxyConfig({
+  channelConfig = {},
+  accountConfig = {},
+  envVars = {},
+  processEnv = process.env,
+  accountId = "default",
+} = {}) {
+  const fromAccountConfig = pickFirstNonEmptyString(
+    accountConfig?.outboundProxy,
+    accountConfig?.proxyUrl,
+    accountConfig?.proxy,
+  );
+  const fromChannelConfig = pickFirstNonEmptyString(
+    channelConfig?.outboundProxy,
+    channelConfig?.proxyUrl,
+    channelConfig?.proxy,
+  );
+  const fromEnv = readProxyEnv(envVars, processEnv, accountId);
+  const resolved = pickFirstNonEmptyString(fromAccountConfig, fromChannelConfig, fromEnv);
+  return resolved || undefined;
+}
+
 function asPositiveInteger(value, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;

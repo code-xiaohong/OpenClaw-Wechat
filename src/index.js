@@ -5,6 +5,7 @@ import { writeFile, unlink, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import { spawn } from "node:child_process";
+import { ProxyAgent } from "undici";
 import {
   WECOM_TEXT_BYTE_LIMIT,
   buildWecomSessionId,
@@ -17,6 +18,7 @@ import {
   normalizeAudioContentType,
   pickAudioFileExtension,
   resolveVoiceTranscriptionConfig,
+  resolveWecomProxyConfig,
   splitWecomText,
   pickAccountBySignature,
 } from "./core.js";
@@ -28,7 +30,7 @@ const xmlParser = new XMLParser({
 
 // 请求体大小限制 (1MB)
 const MAX_REQUEST_BODY_SIZE = 1024 * 1024;
-const PLUGIN_VERSION = "0.4.3";
+const PLUGIN_VERSION = "0.4.4";
 const WECOM_TEMP_DIR_NAME = "openclaw-wechat";
 const WECOM_TEMP_FILE_RETENTION_MS = 30 * 60 * 1000;
 const FFMPEG_PATH_CHECK_CACHE = {
@@ -36,6 +38,8 @@ const FFMPEG_PATH_CHECK_CACHE = {
   available: false,
 };
 const COMMAND_PATH_CHECK_CACHE = new Map();
+const WECOM_PROXY_DISPATCHER_CACHE = new Map();
+const INVALID_PROXY_CACHE = new Set();
 
 function readRequestBody(req, maxSize = MAX_REQUEST_BODY_SIZE) {
   return new Promise((resolve, reject) => {
@@ -122,7 +126,7 @@ function scheduleTempFileCleanup(filePath, logger, delayMs = WECOM_TEMP_FILE_RET
 // 企业微信 access_token 缓存（支持多账户）
 const accessTokenCaches = new Map(); // key: corpId, value: { token, expiresAt, refreshPromise }
 
-async function getWecomAccessToken({ corpId, corpSecret }) {
+async function getWecomAccessToken({ corpId, corpSecret, proxyUrl, logger }) {
   const cacheKey = corpId;
   let cache = accessTokenCaches.get(cacheKey);
 
@@ -144,7 +148,7 @@ async function getWecomAccessToken({ corpId, corpSecret }) {
   cache.refreshPromise = (async () => {
     try {
       const tokenUrl = `https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${encodeURIComponent(corpId)}&corpsecret=${encodeURIComponent(corpSecret)}`;
-      const tokenRes = await fetchWithRetry(tokenUrl);
+      const tokenRes = await fetchWithRetry(tokenUrl, {}, 3, 1000, { proxyUrl, logger });
       const tokenJson = await tokenRes.json();
       if (!tokenJson?.access_token) {
         throw new Error(`WeCom gettoken failed: ${JSON.stringify(tokenJson)}`);
@@ -235,12 +239,84 @@ function withTimeout(promise, timeoutMs, timeoutMessage) {
   });
 }
 
+function isWecomApiUrl(url) {
+  const raw = typeof url === "string" ? url : String(url ?? "");
+  if (!raw) return false;
+  try {
+    const parsed = new URL(raw);
+    return parsed.hostname === "qyapi.weixin.qq.com";
+  } catch {
+    return raw.includes("qyapi.weixin.qq.com");
+  }
+}
+
+function isLikelyHttpProxyUrl(proxyUrl) {
+  return /^https?:\/\/\S+$/i.test(proxyUrl);
+}
+
+function sanitizeProxyForLog(proxyUrl) {
+  const raw = String(proxyUrl ?? "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.username || parsed.password) {
+      parsed.username = "***";
+      parsed.password = "***";
+    }
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function resolveWecomProxyDispatcher(proxyUrl, logger) {
+  const normalized = String(proxyUrl ?? "").trim();
+  if (!normalized) return null;
+  const printableProxy = sanitizeProxyForLog(normalized);
+  if (WECOM_PROXY_DISPATCHER_CACHE.has(normalized)) {
+    return WECOM_PROXY_DISPATCHER_CACHE.get(normalized);
+  }
+  if (!isLikelyHttpProxyUrl(normalized)) {
+    if (!INVALID_PROXY_CACHE.has(normalized)) {
+      INVALID_PROXY_CACHE.add(normalized);
+      logger?.warn?.(`wecom: outboundProxy ignored (invalid url): ${printableProxy}`);
+    }
+    return null;
+  }
+  try {
+    const dispatcher = new ProxyAgent(normalized);
+    WECOM_PROXY_DISPATCHER_CACHE.set(normalized, dispatcher);
+    logger?.info?.(`wecom: outbound proxy enabled (${printableProxy})`);
+    return dispatcher;
+  } catch (err) {
+    if (!INVALID_PROXY_CACHE.has(normalized)) {
+      INVALID_PROXY_CACHE.add(normalized);
+      logger?.warn?.(
+        `wecom: outboundProxy init failed (${printableProxy}): ${String(err?.message || err)}`,
+      );
+    }
+    return null;
+  }
+}
+
+function attachWecomProxyDispatcher(url, options = {}, { proxyUrl, logger } = {}) {
+  if (!isWecomApiUrl(url)) return options;
+  if (options?.dispatcher) return options;
+  const dispatcher = resolveWecomProxyDispatcher(proxyUrl, logger);
+  if (!dispatcher) return options;
+  return {
+    ...options,
+    dispatcher,
+  };
+}
+
 // 带重试机制的 fetch 包装函数
-async function fetchWithRetry(url, options = {}, maxRetries = 3, initialDelay = 1000) {
+async function fetchWithRetry(url, options = {}, maxRetries = 3, initialDelay = 1000, requestContext = {}) {
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch(url, options);
+      const requestOptions = attachWecomProxyDispatcher(url, options, requestContext);
+      const res = await fetch(url, requestOptions);
       
       // 如果是 2xx 以外的状态码，可能需要重试（根据业务逻辑判断）
       if (!res.ok && attempt < maxRetries) {
@@ -665,9 +741,17 @@ const apiLimiter = new RateLimiter({ maxConcurrent: 3, minInterval: 200 });
 const messageProcessLimiter = new RateLimiter({ maxConcurrent: 2, minInterval: 0 });
 
 // 发送单条文本消息（内部函数，带限流）
-async function sendWecomTextSingle({ corpId, corpSecret, agentId, toUser, text, logger }) {
+async function sendWecomTextSingle({
+  corpId,
+  corpSecret,
+  agentId,
+  toUser,
+  text,
+  logger,
+  proxyUrl,
+}) {
   return apiLimiter.execute(async () => {
-    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret, proxyUrl, logger });
 
     const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
     const body = {
@@ -677,11 +761,17 @@ async function sendWecomTextSingle({ corpId, corpSecret, agentId, toUser, text, 
       text: { content: text },
       safe: 0,
     };
-    const sendRes = await fetchWithRetry(sendUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const sendRes = await fetchWithRetry(
+      sendUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      3,
+      1000,
+      { proxyUrl, logger },
+    );
     const sendJson = await sendRes.json();
     if (sendJson?.errcode !== 0) {
       throw new Error(`WeCom message/send failed: ${JSON.stringify(sendJson)}`);
@@ -692,14 +782,14 @@ async function sendWecomTextSingle({ corpId, corpSecret, agentId, toUser, text, 
 }
 
 // 发送文本消息（支持自动分段）
-async function sendWecomText({ corpId, corpSecret, agentId, toUser, text, logger }) {
+async function sendWecomText({ corpId, corpSecret, agentId, toUser, text, logger, proxyUrl }) {
   const chunks = splitWecomText(text);
 
   logger?.info?.(`wecom: splitting message into ${chunks.length} chunks, total bytes=${getByteLength(text)}`);
 
   for (let i = 0; i < chunks.length; i++) {
     logger?.info?.(`wecom: sending chunk ${i + 1}/${chunks.length}, bytes=${getByteLength(chunks[i])}`);
-    await sendWecomTextSingle({ corpId, corpSecret, agentId, toUser, text: chunks[i], logger });
+    await sendWecomTextSingle({ corpId, corpSecret, agentId, toUser, text: chunks[i], logger, proxyUrl });
     // 分段发送时添加间隔，避免触发限流
     if (i < chunks.length - 1) {
       await sleep(300);
@@ -708,8 +798,8 @@ async function sendWecomText({ corpId, corpSecret, agentId, toUser, text, logger
 }
 
 // 上传临时素材到企业微信
-async function uploadWecomMedia({ corpId, corpSecret, type, buffer, filename }) {
-  const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+async function uploadWecomMedia({ corpId, corpSecret, type, buffer, filename, logger, proxyUrl }) {
+  const accessToken = await getWecomAccessToken({ corpId, corpSecret, proxyUrl, logger });
   const uploadUrl = `https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${encodeURIComponent(accessToken)}&type=${encodeURIComponent(type)}`;
 
   // 构建 multipart/form-data
@@ -722,13 +812,19 @@ async function uploadWecomMedia({ corpId, corpSecret, type, buffer, filename }) 
   const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
   const body = Buffer.concat([header, buffer, footer]);
 
-  const res = await fetchWithRetry(uploadUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+  const res = await fetchWithRetry(
+    uploadUrl,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
     },
-    body,
-  });
+    3,
+    1000,
+    { proxyUrl, logger },
+  );
 
   const json = await res.json();
   if (json.errcode !== 0) {
@@ -739,9 +835,9 @@ async function uploadWecomMedia({ corpId, corpSecret, type, buffer, filename }) 
 }
 
 // 发送图片消息（带限流）
-async function sendWecomImage({ corpId, corpSecret, agentId, toUser, mediaId }) {
+async function sendWecomImage({ corpId, corpSecret, agentId, toUser, mediaId, logger, proxyUrl }) {
   return apiLimiter.execute(async () => {
-    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret, proxyUrl, logger });
     const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
 
     const body = {
@@ -752,11 +848,17 @@ async function sendWecomImage({ corpId, corpSecret, agentId, toUser, mediaId }) 
       safe: 0,
     };
 
-    const sendRes = await fetchWithRetry(sendUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const sendRes = await fetchWithRetry(
+      sendUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      3,
+      1000,
+      { proxyUrl, logger },
+    );
 
     const sendJson = await sendRes.json();
     if (sendJson?.errcode !== 0) {
@@ -767,9 +869,19 @@ async function sendWecomImage({ corpId, corpSecret, agentId, toUser, mediaId }) 
 }
 
 // 发送视频消息（带限流）
-async function sendWecomVideo({ corpId, corpSecret, agentId, toUser, mediaId, title, description }) {
+async function sendWecomVideo({
+  corpId,
+  corpSecret,
+  agentId,
+  toUser,
+  mediaId,
+  title,
+  description,
+  logger,
+  proxyUrl,
+}) {
   return apiLimiter.execute(async () => {
-    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret, proxyUrl, logger });
     const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
     const body = {
       touser: toUser,
@@ -782,11 +894,17 @@ async function sendWecomVideo({ corpId, corpSecret, agentId, toUser, mediaId, ti
       },
       safe: 0,
     };
-    const sendRes = await fetchWithRetry(sendUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const sendRes = await fetchWithRetry(
+      sendUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      3,
+      1000,
+      { proxyUrl, logger },
+    );
     const sendJson = await sendRes.json();
     if (sendJson?.errcode !== 0) {
       throw new Error(`WeCom video send failed: ${JSON.stringify(sendJson)}`);
@@ -796,9 +914,9 @@ async function sendWecomVideo({ corpId, corpSecret, agentId, toUser, mediaId, ti
 }
 
 // 发送文件消息（带限流）
-async function sendWecomFile({ corpId, corpSecret, agentId, toUser, mediaId }) {
+async function sendWecomFile({ corpId, corpSecret, agentId, toUser, mediaId, logger, proxyUrl }) {
   return apiLimiter.execute(async () => {
-    const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+    const accessToken = await getWecomAccessToken({ corpId, corpSecret, proxyUrl, logger });
     const sendUrl = `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${encodeURIComponent(accessToken)}`;
     const body = {
       touser: toUser,
@@ -807,11 +925,17 @@ async function sendWecomFile({ corpId, corpSecret, agentId, toUser, mediaId }) {
       file: { media_id: mediaId },
       safe: 0,
     };
-    const sendRes = await fetchWithRetry(sendUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const sendRes = await fetchWithRetry(
+      sendUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      3,
+      1000,
+      { proxyUrl, logger },
+    );
     const sendJson = await sendRes.json();
     if (sendJson?.errcode !== 0) {
       throw new Error(`WeCom file send failed: ${JSON.stringify(sendJson)}`);
@@ -829,6 +953,31 @@ async function fetchMediaFromUrl(url) {
   const buffer = Buffer.from(await res.arrayBuffer());
   const contentType = res.headers.get("content-type") || "application/octet-stream";
   return { buffer, contentType };
+}
+
+function resolveWecomOutboundMediaTarget({ mediaUrl, mediaType }) {
+  const normalizedType = String(mediaType ?? "").trim().toLowerCase();
+  const lowerUrl = String(mediaUrl ?? "").trim().toLowerCase();
+  const pathPart = lowerUrl.split("?")[0].split("#")[0];
+  const ext = (pathPart.match(/\.([a-z0-9]{1,8})$/)?.[1] ?? "").toLowerCase();
+  const inferredName = (() => {
+    const raw = String(mediaUrl ?? "").trim();
+    if (!raw) return "attachment";
+    const withoutQuery = raw.split("?")[0].split("#")[0];
+    const name = basename(withoutQuery);
+    return name || "attachment";
+  })();
+
+  if (normalizedType === "image") return { type: "image", filename: inferredName || "image.jpg" };
+  if (normalizedType === "video") return { type: "video", filename: inferredName || "video.mp4" };
+  if (normalizedType === "file") return { type: "file", filename: inferredName || "file.bin" };
+
+  const imageExts = new Set(["jpg", "jpeg", "png", "gif", "bmp", "webp"]);
+  const videoExts = new Set(["mp4", "mov", "m4v", "webm", "avi"]);
+
+  if (imageExts.has(ext)) return { type: "image", filename: inferredName || `image.${ext}` };
+  if (videoExts.has(ext)) return { type: "video", filename: inferredName || `video.${ext}` };
+  return { type: "file", filename: inferredName || "file.bin" };
 }
 
 const WecomChannelPlugin = {
@@ -866,7 +1015,15 @@ const WecomChannelPlugin = {
       if (!config?.corpId || !config?.corpSecret || !config?.agentId) {
         return { ok: false, error: new Error("WeCom not configured (check channels.wecom in openclaw.json)") };
       }
-      await sendWecomText({ corpId: config.corpId, corpSecret: config.corpSecret, agentId: config.agentId, toUser: to, text });
+      await sendWecomText({
+        corpId: config.corpId,
+        corpSecret: config.corpSecret,
+        agentId: config.agentId,
+        toUser: to,
+        text,
+        logger: gatewayRuntime?.logger,
+        proxyUrl: config.outboundProxy,
+      });
       return { ok: true, provider: "wecom" };
     },
   },
@@ -878,21 +1035,54 @@ const WecomChannelPlugin = {
       if (!config?.corpId || !config?.corpSecret || !config?.agentId) {
         throw new Error("WeCom not configured (check channels.wecom in openclaw.json)");
       }
-      const { corpId, corpSecret, agentId } = config;
+      const { corpId, corpSecret, agentId, outboundProxy: proxyUrl } = config;
       // to 格式为 "wecom:userid"，需要提取 userid
       const userId = to.startsWith("wecom:") ? to.slice(6) : to;
 
       // 如果有媒体附件，先发送媒体
-      if (mediaUrl && mediaType === "image") {
+      if (mediaUrl) {
         try {
+          const target = resolveWecomOutboundMediaTarget({ mediaUrl, mediaType });
           const { buffer } = await fetchMediaFromUrl(mediaUrl);
           const mediaId = await uploadWecomMedia({
             corpId, corpSecret,
-            type: "image",
+            type: target.type,
             buffer,
-            filename: "image.jpg",
+            filename: target.filename,
+            logger: gatewayRuntime?.logger,
+            proxyUrl,
           });
-          await sendWecomImage({ corpId, corpSecret, agentId, toUser: userId, mediaId });
+          if (target.type === "image") {
+            await sendWecomImage({
+              corpId,
+              corpSecret,
+              agentId,
+              toUser: userId,
+              mediaId,
+              logger: gatewayRuntime?.logger,
+              proxyUrl,
+            });
+          } else if (target.type === "video") {
+            await sendWecomVideo({
+              corpId,
+              corpSecret,
+              agentId,
+              toUser: userId,
+              mediaId,
+              logger: gatewayRuntime?.logger,
+              proxyUrl,
+            });
+          } else {
+            await sendWecomFile({
+              corpId,
+              corpSecret,
+              agentId,
+              toUser: userId,
+              mediaId,
+              logger: gatewayRuntime?.logger,
+              proxyUrl,
+            });
+          }
         } catch (mediaErr) {
           // 媒体发送失败不阻止文本发送，只记录警告
           gatewayRuntime?.logger?.warn?.(`wecom: failed to send media: ${mediaErr.message}`);
@@ -901,7 +1091,15 @@ const WecomChannelPlugin = {
 
       // 发送文本消息
       if (text) {
-        await sendWecomText({ corpId, corpSecret, agentId, toUser: userId, text });
+        await sendWecomText({
+          corpId,
+          corpSecret,
+          agentId,
+          toUser: userId,
+          text,
+          logger: gatewayRuntime?.logger,
+          proxyUrl,
+        });
       }
 
       return { ok: true };
@@ -931,6 +1129,7 @@ function normalizeAccountConfig(raw, accountId) {
   const callbackToken = String(raw.callbackToken ?? "").trim();
   const callbackAesKey = String(raw.callbackAesKey ?? "").trim();
   const webhookPath = String(raw.webhookPath ?? "/wecom/callback").trim() || "/wecom/callback";
+  const outboundProxy = String(raw.outboundProxy ?? raw.proxyUrl ?? raw.proxy ?? "").trim();
 
   if (!corpId || !corpSecret || !agentId) {
     return null;
@@ -944,6 +1143,7 @@ function normalizeAccountConfig(raw, accountId) {
     callbackToken,
     callbackAesKey,
     webhookPath,
+    outboundProxy: outboundProxy || undefined,
     enabled: raw.enabled !== false,
   };
 }
@@ -964,6 +1164,12 @@ function readAccountConfigFromEnv({ envVars, accountId }) {
   const callbackToken = String(readVar("CALLBACK_TOKEN") ?? "").trim();
   const callbackAesKey = String(readVar("CALLBACK_AES_KEY") ?? "").trim();
   const webhookPath = String(readVar("WEBHOOK_PATH") ?? "/wecom/callback").trim() || "/wecom/callback";
+  const outboundProxy = String(
+    readVar("PROXY") ??
+      (normalizedId === "default"
+        ? requireEnv("HTTPS_PROXY")
+        : envVars?.WECOM_PROXY ?? requireEnv("WECOM_PROXY") ?? requireEnv("HTTPS_PROXY")),
+  ).trim();
   const enabledRaw = String(readVar("ENABLED") ?? "").trim().toLowerCase();
   const enabled = !["0", "false", "off", "no"].includes(enabledRaw);
 
@@ -977,6 +1183,7 @@ function readAccountConfigFromEnv({ envVars, accountId }) {
     callbackToken,
     callbackAesKey,
     webhookPath,
+    outboundProxy: outboundProxy || undefined,
     enabled,
   };
 }
@@ -1020,6 +1227,16 @@ function rebuildWecomAccounts(api) {
     if (resolved.has(normalizeAccountId(accountId))) continue;
     const envConfig = readAccountConfigFromEnv({ envVars, accountId });
     if (envConfig) resolved.set(envConfig.accountId, envConfig);
+  }
+
+  for (const [accountId, config] of resolved.entries()) {
+    config.outboundProxy = resolveWecomProxyConfig({
+      channelConfig,
+      accountConfig: config,
+      envVars,
+      processEnv: process.env,
+      accountId,
+    });
   }
 
   wecomAccounts.clear();
@@ -1078,7 +1295,9 @@ export default function register(api) {
   // 初始化配置
   const cfg = getWecomConfig(api);
   if (cfg) {
-    api.logger.info?.(`wecom: config loaded (corpId=${cfg.corpId?.slice(0, 8)}...)`);
+    api.logger.info?.(
+      `wecom: config loaded (corpId=${cfg.corpId?.slice(0, 8)}..., proxy=${cfg.outboundProxy ? "on" : "off"})`,
+    );
   } else {
     api.logger.warn?.("wecom: no configuration found (check channels.wecom in openclaw.json)");
   }
@@ -1317,11 +1536,11 @@ export default function register(api) {
 }
 
 // 下载企业微信媒体文件
-async function downloadWecomMedia({ corpId, corpSecret, mediaId }) {
-  const accessToken = await getWecomAccessToken({ corpId, corpSecret });
+async function downloadWecomMedia({ corpId, corpSecret, mediaId, proxyUrl, logger }) {
+  const accessToken = await getWecomAccessToken({ corpId, corpSecret, proxyUrl, logger });
   const mediaUrl = `https://qyapi.weixin.qq.com/cgi-bin/media/get?access_token=${encodeURIComponent(accessToken)}&media_id=${encodeURIComponent(mediaId)}`;
 
-  const res = await fetchWithRetry(mediaUrl);
+  const res = await fetchWithRetry(mediaUrl, {}, 3, 1000, { proxyUrl, logger });
   if (!res.ok) {
     throw new Error(`Failed to download media: ${res.status}`);
   }
@@ -1342,7 +1561,7 @@ async function downloadWecomMedia({ corpId, corpSecret, mediaId }) {
 }
 
 // 命令处理函数
-async function handleHelpCommand({ api, fromUser, corpId, corpSecret, agentId }) {
+async function handleHelpCommand({ api, fromUser, corpId, corpSecret, agentId, proxyUrl }) {
   const helpText = `🤖 AI 助手使用帮助
 
 可用命令：
@@ -1353,14 +1572,15 @@ async function handleHelpCommand({ api, fromUser, corpId, corpSecret, agentId })
 直接发送消息即可与 AI 对话。
 支持发送图片，AI 会分析图片内容。`;
 
-  await sendWecomText({ corpId, corpSecret, agentId, toUser: fromUser, text: helpText });
+  await sendWecomText({ corpId, corpSecret, agentId, toUser: fromUser, text: helpText, proxyUrl, logger: api.logger });
   return true;
 }
 
-async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId, accountId }) {
+async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId, accountId, proxyUrl }) {
   const config = getWecomConfig(api, accountId);
   const accountIds = listWecomAccountIds(api);
   const voiceConfig = resolveWecomVoiceTranscriptionConfig(api);
+  const proxyEnabled = Boolean(config?.outboundProxy);
   const voiceStatusLine = voiceConfig.enabled
     ? `✅ 语音消息转写（本地 ${voiceConfig.provider}，模型: ${voiceConfig.modelPath || voiceConfig.model}）`
     : "⚠️ 语音消息转写回退未启用（仅使用企业微信 Recognition）";
@@ -1381,9 +1601,18 @@ async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId,
 ✅ Markdown 转换
 ✅ API 限流
 ✅ 多账户支持
+${proxyEnabled ? "✅ WeCom 出站代理已启用" : "ℹ️ WeCom 出站代理未启用"}
 ${voiceStatusLine}`;
 
-  await sendWecomText({ corpId, corpSecret, agentId, toUser: fromUser, text: statusText });
+  await sendWecomText({
+    corpId,
+    corpSecret,
+    agentId,
+    toUser: fromUser,
+    text: statusText,
+    logger: api.logger,
+    proxyUrl,
+  });
   return true;
 }
 
@@ -1422,7 +1651,7 @@ async function processInboundMessage({
     return;
   }
 
-  const { corpId, corpSecret, agentId } = config;
+  const { corpId, corpSecret, agentId, outboundProxy: proxyUrl } = config;
 
   try {
     // 一用户一会话：群聊和私聊统一归并到 wecom:<userid>
@@ -1449,6 +1678,7 @@ async function processInboundMessage({
           corpSecret,
           agentId,
           accountId: config.accountId || "default",
+          proxyUrl,
           chatId,
           isGroupChat,
         });
@@ -1468,7 +1698,13 @@ async function processInboundMessage({
 
       try {
         // 优先使用 mediaId 下载原图
-        const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
+        const { buffer, contentType } = await downloadWecomMedia({
+          corpId,
+          corpSecret,
+          mediaId,
+          proxyUrl,
+          logger: api.logger,
+        });
         imageBase64 = buffer.toString("base64");
         imageMimeType = contentType || "image/jpeg";
         messageText = "[用户发送了一张图片]";
@@ -1512,12 +1748,19 @@ async function processInboundMessage({
             toUser: fromUser,
             text: "语音识别未启用，请先开启企业微信语音识别，或直接发送文字消息。",
             logger: api.logger,
+            proxyUrl,
           });
           return;
         }
 
         try {
-          const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
+          const { buffer, contentType } = await downloadWecomMedia({
+            corpId,
+            corpSecret,
+            mediaId,
+            proxyUrl,
+            logger: api.logger,
+          });
           api.logger.info?.(
             `wecom: downloaded voice media for transcription, size=${buffer.length}, type=${contentType || "unknown"}`,
           );
@@ -1541,6 +1784,7 @@ async function processInboundMessage({
               "语音识别失败，请稍后重试。\n" +
               "如持续失败，请确认本地 whisper 命令可用、模型路径已配置，并已安装 ffmpeg。",
             logger: api.logger,
+            proxyUrl,
           });
           return;
         }
@@ -1551,7 +1795,13 @@ async function processInboundMessage({
     if (msgType === "video" && mediaId) {
       api.logger.info?.(`wecom: received video message mediaId=${mediaId}`);
       try {
-        const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
+        const { buffer, contentType } = await downloadWecomMedia({
+          corpId,
+          corpSecret,
+          mediaId,
+          proxyUrl,
+          logger: api.logger,
+        });
         const tempDir = join(tmpdir(), WECOM_TEMP_DIR_NAME);
         await mkdir(tempDir, { recursive: true });
         const videoTempPath = join(tempDir, `video-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
@@ -1569,7 +1819,13 @@ async function processInboundMessage({
     if (msgType === "file" && mediaId) {
       api.logger.info?.(`wecom: received file message mediaId=${mediaId}, fileName=${fileName}, size=${fileSize}`);
       try {
-        const { buffer, contentType } = await downloadWecomMedia({ corpId, corpSecret, mediaId });
+        const { buffer, contentType } = await downloadWecomMedia({
+          corpId,
+          corpSecret,
+          mediaId,
+          proxyUrl,
+          logger: api.logger,
+        });
         const ext = fileName ? fileName.split(".").pop() : "bin";
         const safeFileName = fileName || `file-${Date.now()}.${ext}`;
         const tempDir = join(tmpdir(), WECOM_TEMP_DIR_NAME);
@@ -1721,6 +1977,7 @@ async function processInboundMessage({
         toUser: fromUser,
         text,
         logger: api.logger,
+        proxyUrl,
       });
     };
     const sendFailureFallback = async (reason) => {
@@ -1734,6 +1991,7 @@ async function processInboundMessage({
         toUser: fromUser,
         text: `抱歉，当前模型请求超时或网络不稳定，请稍后重试。\n故障信息: ${reasonText}`,
         logger: api.logger,
+        proxyUrl,
       });
     };
 
@@ -1784,6 +2042,7 @@ async function processInboundMessage({
                   toUser: fromUser,
                   text: formattedReply,
                   logger: api.logger,
+                  proxyUrl,
                 });
                 hasDeliveredReply = true;
                 api.logger.info?.(`wecom: sent AI reply to ${fromUser}: ${formattedReply.slice(0, 50)}...`);
@@ -1796,6 +2055,7 @@ async function processInboundMessage({
                   toUser: fromUser,
                   text: "已收到模型返回的媒体结果，但当前版本暂不支持直接回传该媒体，请稍后重试文本请求。",
                   logger: api.logger,
+                  proxyUrl,
                 });
                 hasDeliveredReply = true;
               }
@@ -1828,6 +2088,7 @@ async function processInboundMessage({
             toUser: fromUser,
             text: markdownToWecomText(blockText),
             logger: api.logger,
+            proxyUrl,
           });
           hasDeliveredReply = true;
           api.logger.info?.("wecom: delivered accumulated block reply as final fallback");
@@ -1874,6 +2135,7 @@ async function processInboundMessage({
         toUser: fromUser,
         text: `抱歉，处理您的消息时出现错误，请稍后重试。\n错误: ${err.message?.slice(0, 100) || "未知错误"}`,
         logger: api.logger,
+        proxyUrl,
       });
     } catch (sendErr) {
       api.logger.error?.(`wecom: failed to send error message: ${sendErr.message}`);

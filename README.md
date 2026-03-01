@@ -17,6 +17,7 @@
 ### 媒体功能
 - [x] 图片消息接收和 AI 识别（Vision 能力）
 - [x] 图片消息发送
+- [x] 视频/文件消息回包（按 `mediaType` 或 URL 后缀自动判型）
 - [x] 语音消息转文字（优先企业微信 Recognition，缺失时自动回退 STT）
 
 ### 用户体验
@@ -30,6 +31,7 @@
 - [x] 群聊支持
 - [x] Token 并发安全
 - [x] wecom:selfcheck 一键自检
+- [x] WeCom API 出站代理（`WECOM_PROXY` / `channels.wecom.outboundProxy`）
 
 ## 前置要求
 
@@ -122,6 +124,7 @@ openclaw plugins install openclaw-wechat
       "callbackToken": "默认账户Token",
       "callbackAesKey": "默认账户EncodingAESKey",
       "webhookPath": "/wecom/callback",
+      "outboundProxy": "http://127.0.0.1:7890",
       "voiceTranscription": {
         "enabled": true,
         "provider": "local-whisper-cli",
@@ -145,6 +148,7 @@ openclaw plugins install openclaw-wechat
 {
   "channels": {
     "wecom": {
+      "outboundProxy": "http://127.0.0.1:7890",
       "accounts": {
         "default": {
           "enabled": true,
@@ -162,7 +166,8 @@ openclaw plugins install openclaw-wechat
           "agentId": 1000005,
           "callbackToken": "销售账户Token",
           "callbackAesKey": "销售账户EncodingAESKey",
-          "webhookPath": "/wecom/sales/callback"
+          "webhookPath": "/wecom/sales/callback",
+          "outboundProxy": "http://10.0.0.5:8888"
         }
       }
     }
@@ -278,8 +283,8 @@ npm run wecom:smoke
 | 文本 | ✅ | ✅ | 完全支持，自动分段 |
 | 图片 | ✅ | ✅ | 支持 Vision 识别 |
 | 语音 | ✅ | ❌ | 优先用企业微信 Recognition；否则插件走 STT 回退 |
-| 视频 | ✅ | ❌ | 接收后保存临时文件供 AI 处理 |
-| 文件 | ✅ | ❌ | 接收后保存临时文件供 AI 处理 |
+| 视频 | ✅ | ✅ | 接收后可保存供 AI 处理；回包支持 video 素材 |
+| 文件 | ✅ | ✅ | 接收后可保存供 AI 处理；回包支持 file 素材 |
 | 链接 | ✅ | ❌ | 支持标题/描述/URL 提取 |
 
 ## 环境变量说明
@@ -292,6 +297,8 @@ npm run wecom:smoke
 | `WECOM_CALLBACK_TOKEN` | 是 | 回调配置的 Token |
 | `WECOM_CALLBACK_AES_KEY` | 是 | 回调配置的 EncodingAESKey |
 | `WECOM_WEBHOOK_PATH` | 否 | Webhook 路径，默认 `/wecom/callback` |
+| `WECOM_PROXY` | 否 | WeCom API 出站代理 URL（如 `http://127.0.0.1:7890`） |
+| `WECOM_<ACCOUNT>_PROXY` | 否 | 指定账户专用代理（优先级高于 `WECOM_PROXY`） |
 | `WECOM_VOICE_TRANSCRIBE_ENABLED` | 否 | 是否启用语音转写回退（默认 true） |
 | `WECOM_VOICE_TRANSCRIBE_PROVIDER` | 否 | 本地提供方：`local-whisper-cli` / `local-whisper` |
 | `WECOM_VOICE_TRANSCRIBE_COMMAND` | 否 | 本地命令路径（默认按 provider 自动探测） |
@@ -341,7 +348,7 @@ npm run wecom:selfcheck -- --all-accounts --json
 
 1. 确认 `WECOM_CORP_ID` 和 `WECOM_CORP_SECRET` 正确
 2. 检查应用的可见范围是否包含测试用户
-3. 确认服务器能访问 `qyapi.weixin.qq.com`
+3. 确认服务器能访问 `qyapi.weixin.qq.com`（若受限，配置 `WECOM_PROXY` 或 `channels.wecom.outboundProxy`）
 
 ## 技术实现
 

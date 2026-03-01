@@ -1,6 +1,6 @@
 {
   "name": "openclaw-wechat",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "description": "WeCom (企业微信) channel plugin for OpenClaw (自建应用回调 + 发送 API).",
@@ -33,6 +33,7 @@
     "wecom:smoke": "bash ./scripts/wecom-smoke.sh"
   },
   "dependencies": {
-    "fast-xml-parser": "^5.3.5"
+    "fast-xml-parser": "^5.3.5",
+    "undici": "^7.22.0"
   }
 }
