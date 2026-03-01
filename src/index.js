@@ -20,6 +20,7 @@ import {
   extractLeadingSlashCommand,
   isWecomSenderAllowed,
   resolveWecomAllowFromPolicyConfig,
+  resolveWecomBotModeConfig,
   resolveWecomCommandPolicyConfig,
   resolveWecomDebounceConfig,
   resolveWecomGroupChatConfig,
@@ -39,7 +40,7 @@ const xmlParser = new XMLParser({
 
 // 请求体大小限制 (1MB)
 const MAX_REQUEST_BODY_SIZE = 1024 * 1024;
-const PLUGIN_VERSION = "0.4.8";
+const PLUGIN_VERSION = "0.4.9";
 const WECOM_TEMP_DIR_NAME = "openclaw-wechat";
 const WECOM_TEMP_FILE_RETENTION_MS = 30 * 60 * 1000;
 const FFMPEG_PATH_CHECK_CACHE = {
@@ -53,6 +54,8 @@ const TEXT_MESSAGE_DEBOUNCE_BUFFERS = new Map();
 const ACTIVE_LATE_REPLY_WATCHERS = new Map();
 const DELIVERED_TRANSCRIPT_REPLY_CACHE = new Map();
 const TRANSCRIPT_REPLY_CACHE_TTL_MS = 30 * 60 * 1000;
+const BOT_STREAMS = new Map();
+let BOT_STREAM_CLEANUP_TIMER = null;
 
 function readRequestBody(req, maxSize = MAX_REQUEST_BODY_SIZE) {
   return new Promise((resolve, reject) => {
@@ -108,10 +111,252 @@ function decryptWecom({ aesKey, cipherTextBase64 }) {
   return { msg, corpId };
 }
 
+function pkcs7Pad(buf, blockSize = 32) {
+  const amountToPad = blockSize - (buf.length % blockSize || blockSize);
+  const pad = Buffer.alloc(amountToPad === 0 ? blockSize : amountToPad, amountToPad === 0 ? blockSize : amountToPad);
+  return Buffer.concat([buf, pad]);
+}
+
+function encryptWecom({ aesKey, plainText, corpId = "" }) {
+  const key = decodeAesKey(aesKey);
+  const iv = key.subarray(0, 16);
+  const random16 = crypto.randomBytes(16);
+  const msgBuffer = Buffer.from(String(plainText ?? ""), "utf8");
+  const lenBuffer = Buffer.alloc(4);
+  lenBuffer.writeUInt32BE(msgBuffer.length, 0);
+  const corpBuffer = Buffer.from(String(corpId ?? ""), "utf8");
+  const raw = Buffer.concat([random16, lenBuffer, msgBuffer, corpBuffer]);
+  const padded = pkcs7Pad(raw, 32);
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  cipher.setAutoPadding(false);
+  const encrypted = Buffer.concat([cipher.update(padded), cipher.final()]);
+  return encrypted.toString("base64");
+}
+
 function parseIncomingXml(xml) {
   const obj = xmlParser.parse(xml);
   const root = obj?.xml ?? obj;
   return root;
+}
+
+function parseIncomingJson(jsonText) {
+  if (!jsonText) return null;
+  const parsed = JSON.parse(jsonText);
+  return parsed && typeof parsed === "object" ? parsed : null;
+}
+
+function buildWecomBotEncryptedResponse({ token, aesKey, timestamp, nonce, plainPayload }) {
+  const plainText = JSON.stringify(plainPayload ?? {});
+  const encrypt = encryptWecom({
+    aesKey,
+    plainText,
+    corpId: "",
+  });
+  const msgsignature = computeMsgSignature({
+    token,
+    timestamp,
+    nonce,
+    encrypt,
+  });
+  return JSON.stringify({
+    encrypt,
+    msgsignature,
+    timestamp: String(timestamp ?? ""),
+    nonce: String(nonce ?? ""),
+  });
+}
+
+function createBotStream(streamId, initialContent = "") {
+  const now = Date.now();
+  BOT_STREAMS.set(streamId, {
+    id: streamId,
+    content: String(initialContent ?? ""),
+    finished: false,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+function updateBotStream(streamId, content, { append = false, finished = false } = {}) {
+  const existing = BOT_STREAMS.get(streamId);
+  if (!existing) return null;
+  const incoming = String(content ?? "");
+  if (append) {
+    existing.content = `${existing.content}${incoming}`;
+  } else {
+    existing.content = incoming;
+  }
+  if (finished) existing.finished = true;
+  existing.updatedAt = Date.now();
+  BOT_STREAMS.set(streamId, existing);
+  return existing;
+}
+
+function finishBotStream(streamId, content) {
+  if (!BOT_STREAMS.has(streamId)) return null;
+  if (content != null) {
+    return updateBotStream(streamId, content, { append: false, finished: true });
+  }
+  const existing = BOT_STREAMS.get(streamId);
+  existing.finished = true;
+  existing.updatedAt = Date.now();
+  BOT_STREAMS.set(streamId, existing);
+  return existing;
+}
+
+function getBotStream(streamId) {
+  return BOT_STREAMS.get(streamId) ?? null;
+}
+
+function cleanupExpiredBotStreams(expireMs = 10 * 60 * 1000) {
+  const now = Date.now();
+  for (const [streamId, stream] of BOT_STREAMS.entries()) {
+    const age = now - Number(stream?.updatedAt ?? now);
+    if (age > expireMs) {
+      BOT_STREAMS.delete(streamId);
+    }
+  }
+}
+
+function ensureBotStreamCleanupTimer(expireMs, logger) {
+  if (BOT_STREAM_CLEANUP_TIMER) return;
+  BOT_STREAM_CLEANUP_TIMER = setInterval(() => {
+    cleanupExpiredBotStreams(expireMs);
+  }, 60 * 1000);
+  BOT_STREAM_CLEANUP_TIMER.unref?.();
+  logger?.info?.(`wecom(bot): stream cleanup timer started (expireMs=${expireMs})`);
+}
+
+function collectWecomBotImageUrls(imageLike) {
+  const candidates = [
+    imageLike?.url,
+    imageLike?.pic_url,
+    imageLike?.picUrl,
+    imageLike?.image_url,
+    imageLike?.imageUrl,
+  ];
+  const dedupe = new Set();
+  const urls = [];
+  for (const candidate of candidates) {
+    const url = String(candidate ?? "").trim();
+    if (!url || dedupe.has(url)) continue;
+    dedupe.add(url);
+    urls.push(url);
+  }
+  return urls;
+}
+
+function parseWecomBotInboundMessage(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const msgType = String(payload.msgtype ?? "").trim().toLowerCase();
+  if (!msgType) return null;
+  if (msgType === "stream") {
+    return {
+      kind: "stream-refresh",
+      streamId: String(payload?.stream?.id ?? "").trim(),
+    };
+  }
+
+  const msgId = String(payload.msgid ?? "").trim() || `wecom-bot-${Date.now()}`;
+  const fromUser = String(payload?.from?.userid ?? "").trim();
+  const chatType = String(payload.chattype ?? "single").trim().toLowerCase() || "single";
+  const chatId = String(payload.chatid ?? "").trim();
+  const responseUrl = String(payload.response_url ?? "").trim();
+  let content = "";
+  const imageUrls = [];
+
+  if (msgType === "text") {
+    content = String(payload?.text?.content ?? "").trim();
+  } else if (msgType === "voice") {
+    content = String(payload?.voice?.content ?? "").trim();
+  } else if (msgType === "link") {
+    const title = String(payload?.link?.title ?? "").trim();
+    const description = String(payload?.link?.description ?? "").trim();
+    const url = String(payload?.link?.url ?? "").trim();
+    content = [title ? `[链接] ${title}` : "", description, url].filter(Boolean).join("\n").trim();
+  } else if (msgType === "location") {
+    const latitude = String(payload?.location?.latitude ?? "").trim();
+    const longitude = String(payload?.location?.longitude ?? "").trim();
+    const name = String(payload?.location?.name ?? payload?.location?.label ?? "").trim();
+    content = name ? `[位置] ${name} (${latitude}, ${longitude})` : `[位置] ${latitude}, ${longitude}`;
+  } else if (msgType === "image") {
+    imageUrls.push(...collectWecomBotImageUrls(payload?.image));
+    content = "[图片]";
+  } else if (msgType === "mixed") {
+    const items = Array.isArray(payload?.mixed?.msg_item) ? payload.mixed.msg_item : [];
+    const parts = [];
+    for (const item of items) {
+      const itemType = String(item?.msgtype ?? "").trim().toLowerCase();
+      if (itemType === "text") {
+        const text = String(item?.text?.content ?? "").trim();
+        if (text) parts.push(text);
+      } else if (itemType === "image") {
+        const itemImageUrls = collectWecomBotImageUrls(item?.image);
+        if (itemImageUrls.length > 0) {
+          imageUrls.push(...itemImageUrls);
+          parts.push("[图片]");
+        }
+      }
+    }
+    content = parts.join("\n").trim();
+  } else if (msgType === "event") {
+    return {
+      kind: "event",
+      eventType: String(payload?.event?.event_type ?? payload?.event ?? "").trim(),
+      fromUser,
+    };
+  } else {
+    return {
+      kind: "unsupported",
+      msgType,
+      fromUser,
+      msgId,
+    };
+  }
+
+  if (!fromUser) {
+    return {
+      kind: "invalid",
+      reason: "missing-from-user",
+      msgType,
+      msgId,
+    };
+  }
+
+  return {
+    kind: "message",
+    msgType,
+    msgId,
+    fromUser,
+    chatType,
+    chatId,
+    responseUrl,
+    content,
+    imageUrls,
+    isGroupChat: chatType === "group" || Boolean(chatId),
+  };
+}
+
+function describeWecomBotParsedMessage(parsed) {
+  if (!parsed || typeof parsed !== "object") return "unknown";
+  if (parsed.kind === "message") {
+    const imageCount = Array.isArray(parsed.imageUrls) ? parsed.imageUrls.length : 0;
+    const imageSuffix = imageCount > 0 ? ` images=${imageCount}` : "";
+    return `message msgType=${parsed.msgType || "unknown"} from=${parsed.fromUser || "unknown"} msgId=${parsed.msgId || "n/a"}${imageSuffix}`;
+  }
+  if (parsed.kind === "stream-refresh") {
+    return `stream-refresh streamId=${parsed.streamId || "unknown"}`;
+  }
+  if (parsed.kind === "unsupported") {
+    return `unsupported msgType=${parsed.msgType || "unknown"} from=${parsed.fromUser || "unknown"} msgId=${parsed.msgId || "n/a"}`;
+  }
+  if (parsed.kind === "invalid") {
+    return `invalid reason=${parsed.reason || "unknown"} msgType=${parsed.msgType || "unknown"} msgId=${parsed.msgId || "n/a"}`;
+  }
+  if (parsed.kind === "event") {
+    return `event eventType=${parsed.eventType || "unknown"} from=${parsed.fromUser || "unknown"}`;
+  }
+  return parsed.kind || "unknown";
 }
 
 function requireEnv(name, fallback) {
@@ -443,12 +688,14 @@ function resolveWecomProxyDispatcher(proxyUrl, logger) {
 }
 
 function attachWecomProxyDispatcher(url, options = {}, { proxyUrl, logger } = {}) {
-  if (!isWecomApiUrl(url)) return options;
+  const shouldForceProxy = options?.forceProxy === true;
+  if (!isWecomApiUrl(url) && !shouldForceProxy) return options;
   if (options?.dispatcher) return options;
   const dispatcher = resolveWecomProxyDispatcher(proxyUrl, logger);
   if (!dispatcher) return options;
+  const { forceProxy, ...restOptions } = options || {};
   return {
-    ...options,
+    ...restOptions,
     dispatcher,
   };
 }
@@ -1088,14 +1335,53 @@ async function sendWecomFile({ corpId, corpSecret, agentId, toUser, mediaId, log
 }
 
 // 从 URL 下载媒体文件
-async function fetchMediaFromUrl(url) {
-  const res = await fetchWithRetry(url);
+async function fetchMediaFromUrl(url, { proxyUrl, logger, forceProxy = false, maxBytes = 10 * 1024 * 1024 } = {}) {
+  const res = await fetchWithRetry(
+    url,
+    {
+      headers: {
+        "User-Agent": `OpenClaw-Wechat/${PLUGIN_VERSION}`,
+        Accept: "*/*",
+      },
+      forceProxy,
+    },
+    3,
+    1000,
+    { proxyUrl, logger },
+  );
   if (!res.ok) {
     throw new Error(`Failed to fetch media from URL: ${res.status}`);
   }
+  const contentLength = Number(res.headers.get("content-length") ?? 0);
+  if (Number.isFinite(contentLength) && contentLength > 0 && contentLength > maxBytes) {
+    throw new Error(`Media too large (${contentLength} bytes > ${maxBytes} bytes)`);
+  }
   const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length > maxBytes) {
+    throw new Error(`Media too large (${buffer.length} bytes > ${maxBytes} bytes)`);
+  }
   const contentType = res.headers.get("content-type") || "application/octet-stream";
   return { buffer, contentType };
+}
+
+function pickImageFileExtension({ contentType, sourceUrl }) {
+  const normalizedType = String(contentType ?? "")
+    .trim()
+    .toLowerCase()
+    .split(";")[0]
+    .trim();
+  if (normalizedType.includes("png")) return ".png";
+  if (normalizedType.includes("gif")) return ".gif";
+  if (normalizedType.includes("webp")) return ".webp";
+  if (normalizedType.includes("bmp")) return ".bmp";
+  if (normalizedType.includes("heic")) return ".heic";
+  if (normalizedType.includes("heif")) return ".heif";
+  if (normalizedType.includes("jpg") || normalizedType.includes("jpeg")) return ".jpg";
+
+  const rawPath = String(sourceUrl ?? "").trim().split("?")[0].split("#")[0];
+  const ext = extname(rawPath).trim().toLowerCase();
+  if (ext && ext.length <= 8 && ext.length >= 2) return ext;
+  return ".jpg";
 }
 
 function resolveWecomOutboundMediaTarget({ mediaUrl, mediaType }) {
@@ -1450,6 +1736,19 @@ function resolveWecomPolicyInputs(api) {
   };
 }
 
+function resolveWecomBotConfig(api) {
+  return resolveWecomBotModeConfig(resolveWecomPolicyInputs(api));
+}
+
+function resolveWecomBotProxyConfig(api) {
+  const inputs = resolveWecomPolicyInputs(api);
+  return resolveWecomProxyConfig({
+    ...inputs,
+    accountId: "bot",
+    accountConfig: {},
+  });
+}
+
 function resolveWecomCommandPolicy(api) {
   return resolveWecomCommandPolicyConfig(resolveWecomPolicyInputs(api));
 }
@@ -1576,24 +1875,273 @@ function scheduleTextInboundProcessing(api, basePayload, content) {
   TEXT_MESSAGE_DEBOUNCE_BUFFERS.set(debounceKey, existing);
 }
 
+function registerWecomBotWebhookRoute(api) {
+  const botConfig = resolveWecomBotConfig(api);
+  if (!botConfig.enabled) return false;
+  if (!botConfig.token || !botConfig.encodingAesKey) {
+    api.logger.warn?.(
+      "wecom(bot): enabled but missing token/encodingAesKey; route not registered",
+    );
+    return false;
+  }
+
+  const normalizedPath =
+    normalizePluginHttpPath(botConfig.webhookPath ?? "/wecom/bot/callback", "/wecom/bot/callback") ??
+    "/wecom/bot/callback";
+  ensureBotStreamCleanupTimer(botConfig.streamExpireMs, api.logger);
+  cleanupExpiredBotStreams(botConfig.streamExpireMs);
+
+  api.registerHttpRoute({
+    path: normalizedPath,
+    handler: async (req, res) => {
+      try {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const msg_signature = url.searchParams.get("msg_signature") ?? "";
+        const timestamp = url.searchParams.get("timestamp") ?? "";
+        const nonce = url.searchParams.get("nonce") ?? "";
+        const echostr = url.searchParams.get("echostr") ?? "";
+
+        if (req.method === "GET" && !echostr) {
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("wecom bot webhook ok");
+          return;
+        }
+
+        if (req.method === "GET") {
+          if (!msg_signature || !timestamp || !nonce || !echostr) {
+            res.statusCode = 400;
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.end("Missing query params");
+            return;
+          }
+          const expected = computeMsgSignature({
+            token: botConfig.token,
+            timestamp,
+            nonce,
+            encrypt: echostr,
+          });
+          if (expected !== msg_signature) {
+            res.statusCode = 401;
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.end("Invalid signature");
+            return;
+          }
+          const { msg: plainEchostr } = decryptWecom({
+            aesKey: botConfig.encodingAesKey,
+            cipherTextBase64: echostr,
+          });
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end(plainEchostr);
+          api.logger.info?.(`wecom(bot): verified callback URL at ${normalizedPath}`);
+          return;
+        }
+
+        if (req.method !== "POST") {
+          res.statusCode = 405;
+          res.setHeader("Allow", "GET, POST");
+          res.end();
+          return;
+        }
+
+        let encryptedBody = "";
+        try {
+          const rawBody = await readRequestBody(req);
+          const parsedBody = parseIncomingJson(rawBody);
+          encryptedBody = String(parsedBody?.encrypt ?? "").trim();
+        } catch (err) {
+          res.statusCode = 400;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("Invalid request body");
+          api.logger.warn?.(`wecom(bot): failed to parse callback body: ${String(err?.message || err)}`);
+          return;
+        }
+
+        if (!msg_signature || !timestamp || !nonce || !encryptedBody) {
+          res.statusCode = 400;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("Missing required params");
+          return;
+        }
+
+        const expected = computeMsgSignature({
+          token: botConfig.token,
+          timestamp,
+          nonce,
+          encrypt: encryptedBody,
+        });
+        if (expected !== msg_signature) {
+          res.statusCode = 401;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("Invalid signature");
+          return;
+        }
+
+        let incomingPayload = null;
+        try {
+          const { msg: decryptedPayload } = decryptWecom({
+            aesKey: botConfig.encodingAesKey,
+            cipherTextBase64: encryptedBody,
+          });
+          incomingPayload = parseIncomingJson(decryptedPayload);
+        } catch (err) {
+          res.statusCode = 400;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("Decrypt failed");
+          api.logger.warn?.(`wecom(bot): failed to decrypt payload: ${String(err?.message || err)}`);
+          return;
+        }
+
+        const parsed = parseWecomBotInboundMessage(incomingPayload);
+        api.logger.info?.(`wecom(bot): inbound ${describeWecomBotParsedMessage(parsed)}`);
+        if (!parsed) {
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("success");
+          return;
+        }
+
+        if (parsed.kind === "stream-refresh") {
+          cleanupExpiredBotStreams(botConfig.streamExpireMs);
+          const streamId = parsed.streamId || `stream-${Date.now()}`;
+          const stream = getBotStream(streamId);
+          const plainPayload = {
+            msgtype: "stream",
+            stream: {
+              id: streamId,
+              content: stream?.content ?? "会话已过期",
+              finish: stream ? stream.finished === true : true,
+            },
+          };
+          const encryptedResponse = buildWecomBotEncryptedResponse({
+            token: botConfig.token,
+            aesKey: botConfig.encodingAesKey,
+            timestamp,
+            nonce,
+            plainPayload,
+          });
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.end(encryptedResponse);
+          return;
+        }
+
+        if (parsed.kind === "event") {
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("success");
+          return;
+        }
+
+        if (parsed.kind === "unsupported" || parsed.kind === "invalid") {
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("success");
+          return;
+        }
+
+        if (parsed.kind === "message") {
+          const dedupeStub = {
+            MsgId: parsed.msgId,
+            FromUserName: parsed.fromUser,
+            MsgType: parsed.msgType,
+            Content: parsed.content,
+            CreateTime: String(Math.floor(Date.now() / 1000)),
+          };
+          if (!markInboundMessageSeen(dedupeStub, "bot")) {
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.end("success");
+            return;
+          }
+
+          const streamId = `stream_${crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`}`;
+          createBotStream(streamId, botConfig.placeholderText);
+          const encryptedResponse = buildWecomBotEncryptedResponse({
+            token: botConfig.token,
+            aesKey: botConfig.encodingAesKey,
+            timestamp,
+            nonce,
+            plainPayload: {
+              msgtype: "stream",
+              stream: {
+                id: streamId,
+                content: botConfig.placeholderText,
+                finish: false,
+              },
+            },
+          });
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.end(encryptedResponse);
+
+          messageProcessLimiter
+            .execute(() =>
+              processBotInboundMessage({
+                api,
+                streamId,
+                fromUser: parsed.fromUser,
+                content: parsed.content,
+                msgType: parsed.msgType,
+                msgId: parsed.msgId,
+                chatId: parsed.chatId,
+                isGroupChat: parsed.isGroupChat,
+                imageUrls: parsed.imageUrls,
+              }),
+            )
+            .catch((err) => {
+              api.logger.error?.(`wecom(bot): async message processing failed: ${String(err?.message || err)}`);
+              finishBotStream(
+                streamId,
+                `抱歉，当前模型请求失败，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`,
+              );
+            });
+          return;
+        }
+
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
+        res.end("success");
+      } catch (err) {
+        api.logger.error?.(`wecom(bot): webhook handler failed: ${String(err?.message || err)}`);
+        if (!res.writableEnded) {
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("Internal error");
+        }
+      }
+    },
+  });
+
+  api.logger.info?.(`wecom(bot): registered webhook at ${normalizedPath}`);
+  return true;
+}
+
 export default function register(api) {
   // 保存 runtime 引用
   gatewayRuntime = api.runtime;
 
   // 初始化配置
+  const botModeConfig = resolveWecomBotConfig(api);
   const cfg = getWecomConfig(api);
   if (cfg) {
     api.logger.info?.(
       `wecom: config loaded (corpId=${cfg.corpId?.slice(0, 8)}..., proxy=${cfg.outboundProxy ? "on" : "off"})`,
+    );
+  } else if (botModeConfig.enabled) {
+    api.logger.info?.(
+      `wecom(bot): config loaded (webhook=${botModeConfig.webhookPath}, streamExpireMs=${botModeConfig.streamExpireMs})`,
     );
   } else {
     api.logger.warn?.("wecom: no configuration found (check channels.wecom in openclaw.json)");
   }
 
   api.registerChannel({ plugin: WecomChannelPlugin });
+  const botRouteRegistered = registerWecomBotWebhookRoute(api);
 
   const webhookGroups = groupAccountsByWebhookPath(api);
-  if (webhookGroups.size === 0) {
+  if (webhookGroups.size === 0 && !botRouteRegistered) {
     api.logger.warn?.("wecom: no enabled account with valid config found; webhook route not registered");
     return;
   }
@@ -1889,8 +2437,8 @@ async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId,
     ? `✅ 文本防抖合并已启用（${debouncePolicy.windowMs}ms / 最多 ${debouncePolicy.maxBatch} 条）`
     : "ℹ️ 文本防抖合并未启用";
   const streamingPolicyLine = streamingPolicy.enabled
-    ? `✅ 流式回复已启用（最小片段 ${streamingPolicy.minChars} 字符 / 最短间隔 ${streamingPolicy.minIntervalMs}ms）`
-    : "ℹ️ 流式回复未启用";
+    ? `✅ Agent 增量回包已启用（最小片段 ${streamingPolicy.minChars} 字符 / 最短间隔 ${streamingPolicy.minIntervalMs}ms）`
+    : "ℹ️ Agent 增量回包未启用";
 
   const statusText = `📊 系统状态
 
@@ -1932,6 +2480,413 @@ const COMMANDS = {
   "/help": handleHelpCommand,
   "/status": handleStatusCommand,
 };
+
+function buildWecomBotHelpText() {
+  return `🤖 AI 助手使用帮助（Bot 流式模式）
+
+可用命令：
+/help - 显示帮助信息
+/status - 查看系统状态
+/clear - 重置会话（等价于 /reset）
+
+直接发送消息即可与 AI 对话。`;
+}
+
+function buildWecomBotStatusText(api, fromUser) {
+  const commandPolicy = resolveWecomCommandPolicy(api);
+  const allowFromPolicy = resolveWecomAllowFromPolicy(api, "default", {});
+  const groupPolicy = resolveWecomGroupChatPolicy(api);
+  const botConfig = resolveWecomBotConfig(api);
+  const commandPolicyLine = commandPolicy.enabled
+    ? `✅ 指令白名单已启用（${commandPolicy.allowlist.length} 条，管理员 ${commandPolicy.adminUsers.length} 人）`
+    : "ℹ️ 指令白名单未启用";
+  const allowFromPolicyLine =
+    allowFromPolicy.allowFrom.length === 0 || allowFromPolicy.allowFrom.includes("*")
+      ? "ℹ️ 发送者授权：未限制（allowFrom 未配置）"
+      : `✅ 发送者授权：已限制 ${allowFromPolicy.allowFrom.length} 个用户`;
+  const groupPolicyLine = groupPolicy.enabled
+    ? groupPolicy.requireMention
+      ? "✅ 群聊触发：仅 @ 命中后处理"
+      : "✅ 群聊触发：无需 @（全部处理）"
+    : "⚠️ 群聊处理未启用";
+  return `📊 系统状态
+
+渠道：企业微信 AI 机器人 (Bot)
+会话ID：wecom:${fromUser}
+插件版本：${PLUGIN_VERSION}
+Bot Webhook：${botConfig.webhookPath}
+
+功能状态：
+✅ 原生流式回复（stream）
+${commandPolicyLine}
+${allowFromPolicyLine}
+${groupPolicyLine}`;
+}
+
+async function processBotInboundMessage({
+  api,
+  streamId,
+  fromUser,
+  content,
+  msgType = "text",
+  msgId,
+  chatId,
+  isGroupChat = false,
+  imageUrls = [],
+}) {
+  const runtime = api.runtime;
+  const cfg = api.config;
+  const sessionId = buildWecomSessionId(fromUser);
+  const fromAddress = `wecom:${fromUser}`;
+  const normalizedFromUser = String(fromUser ?? "").trim().toLowerCase();
+  const originalContent = String(content ?? "");
+  let commandBody = originalContent;
+  const dispatchStartedAt = Date.now();
+  const tempPathsToCleanup = [];
+  const botProxyUrl = resolveWecomBotProxyConfig(api);
+  const normalizedImageUrls = Array.from(
+    new Set(
+      (Array.isArray(imageUrls) ? imageUrls : [])
+        .map((item) => String(item ?? "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  const safeFinishStream = (text) => {
+    if (!BOT_STREAMS.has(streamId)) return;
+    finishBotStream(streamId, String(text ?? ""));
+  };
+
+  try {
+    if (isGroupChat && msgType === "text") {
+      const groupChatPolicy = resolveWecomGroupChatPolicy(api);
+      if (!groupChatPolicy.enabled) {
+        safeFinishStream("当前群聊消息处理未启用。");
+        return;
+      }
+      if (!shouldTriggerWecomGroupResponse(commandBody, groupChatPolicy)) {
+        const hint = groupChatPolicy.requireMention ? "请先 @ 机器人后再发送消息。" : "当前消息不满足群聊触发条件。";
+        safeFinishStream(hint);
+        return;
+      }
+      commandBody = stripWecomGroupMentions(commandBody, groupChatPolicy.mentionPatterns);
+    }
+
+    const commandPolicy = resolveWecomCommandPolicy(api);
+    const isAdminUser = commandPolicy.adminUsers.includes(normalizedFromUser);
+    const allowFromPolicy = resolveWecomAllowFromPolicy(api, "default", {});
+    const senderAllowed = isAdminUser || isWecomSenderAllowed({
+      senderId: normalizedFromUser,
+      allowFrom: allowFromPolicy.allowFrom,
+    });
+    if (!senderAllowed) {
+      safeFinishStream(allowFromPolicy.rejectMessage || "当前账号未授权，请联系管理员。");
+      return;
+    }
+
+    if (msgType === "text") {
+      let commandKey = extractLeadingSlashCommand(commandBody);
+      if (commandKey === "/clear") {
+        commandBody = commandBody.replace(/^\/clear\b/i, "/reset");
+        commandKey = "/reset";
+      }
+      if (commandKey) {
+        const commandAllowed =
+          commandPolicy.allowlist.includes(commandKey) ||
+          (commandKey === "/reset" && commandPolicy.allowlist.includes("/clear"));
+        if (commandPolicy.enabled && !isAdminUser && !commandAllowed) {
+          safeFinishStream(commandPolicy.rejectMessage);
+          return;
+        }
+        if (commandKey === "/help") {
+          safeFinishStream(buildWecomBotHelpText());
+          return;
+        }
+        if (commandKey === "/status") {
+          safeFinishStream(buildWecomBotStatusText(api, fromUser));
+          return;
+        }
+      }
+    }
+
+    let messageText = String(commandBody ?? "").trim();
+    if (normalizedImageUrls.length > 0) {
+      const fetchedImagePaths = [];
+      const imageUrlsToFetch = normalizedImageUrls.slice(0, 3);
+      const tempDir = join(tmpdir(), WECOM_TEMP_DIR_NAME);
+      await mkdir(tempDir, { recursive: true });
+      for (const imageUrl of imageUrlsToFetch) {
+        try {
+          const { buffer, contentType } = await fetchMediaFromUrl(imageUrl, {
+            proxyUrl: botProxyUrl,
+            logger: api.logger,
+            forceProxy: Boolean(botProxyUrl),
+            maxBytes: 8 * 1024 * 1024,
+          });
+          const normalizedType = String(contentType ?? "")
+            .trim()
+            .toLowerCase()
+            .split(";")[0]
+            .trim();
+          if (normalizedType && !normalizedType.startsWith("image/")) {
+            throw new Error(`unexpected content-type: ${normalizedType}`);
+          }
+          const ext = pickImageFileExtension({ contentType, sourceUrl: imageUrl });
+          const imageTempPath = join(
+            tempDir,
+            `bot-image-${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`,
+          );
+          await writeFile(imageTempPath, buffer);
+          fetchedImagePaths.push(imageTempPath);
+          tempPathsToCleanup.push(imageTempPath);
+          api.logger.info?.(
+            `wecom(bot): downloaded image from url, size=${buffer.length} bytes, path=${imageTempPath}`,
+          );
+        } catch (imageErr) {
+          api.logger.warn?.(`wecom(bot): failed to fetch image url: ${String(imageErr?.message || imageErr)}`);
+        }
+      }
+
+      if (fetchedImagePaths.length > 0) {
+        const intro = fetchedImagePaths.length > 1 ? "[用户发送了多张图片]" : "[用户发送了一张图片]";
+        const parts = [];
+        if (messageText) parts.push(messageText);
+        parts.push(intro);
+        for (let i = 0; i < fetchedImagePaths.length; i += 1) {
+          parts.push(`图片${i + 1}: ${fetchedImagePaths[i]}`);
+        }
+        parts.push("请使用 Read 工具查看图片并基于图片内容回复用户。");
+        messageText = parts.join("\n").trim();
+      } else if (!messageText || messageText === "[图片]") {
+        safeFinishStream("图片接收失败（下载失败或链接失效），请重新发送原图后重试。");
+        return;
+      } else {
+        messageText = `${messageText}\n\n[附加说明] 用户还发送了图片，但插件下载失败。`;
+      }
+    }
+
+    if (!messageText) {
+      safeFinishStream("消息内容为空，请发送有效文本。");
+      return;
+    }
+
+    const route = runtime.channel.routing.resolveAgentRoute({
+      cfg,
+      sessionKey: sessionId,
+      channel: "wecom",
+      accountId: "bot",
+    });
+    const storePath = runtime.channel.session.resolveStorePath(cfg.session?.store, {
+      agentId: route.agentId,
+    });
+    const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
+    const body = runtime.channel.reply.formatInboundEnvelope({
+      channel: "WeCom Bot",
+      from: isGroupChat && chatId ? `${fromUser} (group:${chatId})` : fromUser,
+      timestamp: Date.now(),
+      body: messageText,
+      chatType: isGroupChat ? "group" : "direct",
+      sender: {
+        name: fromUser,
+        id: fromUser,
+      },
+      ...envelopeOptions,
+    });
+    const ctxPayload = runtime.channel.reply.finalizeInboundContext({
+      Body: body,
+      BodyForAgent: messageText,
+      RawBody: originalContent,
+      CommandBody: commandBody,
+      From: fromAddress,
+      To: fromAddress,
+      SessionKey: sessionId,
+      AccountId: "bot",
+      ChatType: isGroupChat ? "group" : "direct",
+      ConversationLabel: isGroupChat && chatId ? `group:${chatId}` : fromUser,
+      SenderName: fromUser,
+      SenderId: fromUser,
+      Provider: "wecom",
+      Surface: "wecom-bot",
+      MessageSid: msgId || `wecom-bot-${Date.now()}`,
+      Timestamp: Date.now(),
+      OriginatingChannel: "wecom",
+      OriginatingTo: fromAddress,
+    });
+    const sessionRuntimeId = String(ctxPayload.SessionId ?? "").trim();
+
+    await runtime.channel.session.recordInboundSession({
+      storePath,
+      sessionKey: sessionId,
+      ctx: ctxPayload,
+      updateLastRoute: {
+        sessionKey: sessionId,
+        channel: "wecom",
+        to: fromUser,
+        accountId: "bot",
+      },
+      onRecordError: (err) => {
+        api.logger.warn?.(`wecom(bot): failed to record session: ${err}`);
+      },
+    });
+
+    runtime.channel.activity.record({
+      channel: "wecom",
+      accountId: "bot",
+      direction: "inbound",
+    });
+
+    let blockText = "";
+    let streamFinished = false;
+    const replyTimeoutMs = Math.max(
+      15000,
+      asNumber(cfg?.env?.vars?.WECOM_REPLY_TIMEOUT_MS ?? requireEnv("WECOM_REPLY_TIMEOUT_MS"), 90000),
+    );
+    const tryFinishFromTranscript = async (minTimestamp = dispatchStartedAt) => {
+      try {
+        const transcriptPath = await resolveSessionTranscriptFilePath({
+          storePath,
+          sessionKey: sessionId,
+          sessionId: sessionRuntimeId || sessionId,
+          logger: api.logger,
+        });
+        const { chunk } = await readTranscriptAppendedChunk(transcriptPath, 0);
+        if (!chunk) return false;
+        const lines = chunk.split("\n");
+        let latestReply = null;
+        for (const line of lines) {
+          const parsedReply = parseLateAssistantReplyFromTranscriptLine(line, minTimestamp);
+          if (!parsedReply) continue;
+          latestReply = parsedReply;
+        }
+        if (!latestReply?.text) return false;
+        const transcriptText = markdownToWecomText(latestReply.text).trim();
+        if (!transcriptText) return false;
+        safeFinishStream(transcriptText);
+        streamFinished = true;
+        api.logger.info?.(
+          `wecom(bot): filled reply from transcript session=${sessionId} messageId=${latestReply.transcriptMessageId}`,
+        );
+        return true;
+      } catch (err) {
+        api.logger.warn?.(`wecom(bot): transcript fallback failed: ${String(err?.message || err)}`);
+        return false;
+      }
+    };
+
+    await withTimeout(
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+        ctx: ctxPayload,
+        cfg,
+        replyOptions: {
+          disableBlockStreaming: false,
+        },
+        dispatcherOptions: {
+          deliver: async (payload, info) => {
+            if (!BOT_STREAMS.has(streamId)) return;
+            if (info.kind === "block") {
+              if (!payload?.text) return;
+              const incomingBlock = String(payload.text);
+              if (incomingBlock.startsWith(blockText)) {
+                blockText = incomingBlock;
+              } else if (!blockText.endsWith(incomingBlock)) {
+                blockText += incomingBlock;
+              }
+              updateBotStream(streamId, markdownToWecomText(blockText), { append: false, finished: false });
+              return;
+            }
+            if (info.kind !== "final") return;
+            if (payload?.text) {
+              if (isAgentFailureText(payload.text)) {
+                safeFinishStream(`抱歉，请求失败：${payload.text}`);
+                streamFinished = true;
+                return;
+              }
+              const finalText = markdownToWecomText(payload.text).trim();
+              if (finalText) {
+                safeFinishStream(finalText);
+                streamFinished = true;
+                return;
+              }
+            }
+            if (payload?.mediaUrl || (payload?.mediaUrls?.length ?? 0) > 0) {
+              safeFinishStream("已收到模型返回的媒体结果，但 Bot 流式模式暂不支持直接回传该媒体。");
+              streamFinished = true;
+              return;
+            }
+          },
+          onError: async (err, info) => {
+            api.logger.error?.(`wecom(bot): ${info.kind} reply failed: ${String(err)}`);
+            safeFinishStream(`抱歉，当前模型请求失败，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`);
+            streamFinished = true;
+          },
+        },
+      }),
+      replyTimeoutMs,
+      `dispatch timed out after ${replyTimeoutMs}ms`,
+    );
+
+    if (!streamFinished) {
+      const filledFromTranscript = await tryFinishFromTranscript(dispatchStartedAt);
+      if (filledFromTranscript) return;
+      const fallback = markdownToWecomText(blockText).trim();
+      if (fallback) {
+        safeFinishStream(fallback);
+      } else {
+        api.logger.warn?.(
+          `wecom(bot): dispatch finished without deliverable content; fallback to timeout text session=${sessionId}`,
+        );
+        safeFinishStream("抱歉，当前模型请求超时或网络不稳定，请稍后重试。");
+      }
+    }
+  } catch (err) {
+    api.logger.warn?.(`wecom(bot): processing failed: ${String(err?.message || err)}`);
+    try {
+      const fallbackFromTranscript = await (async () => {
+        try {
+          const runtimeSessionId = buildWecomSessionId(fromUser);
+          const runtimeStorePath = runtime.channel.session.resolveStorePath(cfg.session?.store, {
+            agentId: runtime.channel.routing.resolveAgentRoute({
+              cfg,
+              sessionKey: runtimeSessionId,
+              channel: "wecom",
+              accountId: "bot",
+            }).agentId,
+          });
+          const transcriptPath = await resolveSessionTranscriptFilePath({
+            storePath: runtimeStorePath,
+            sessionKey: runtimeSessionId,
+            sessionId: runtimeSessionId,
+            logger: api.logger,
+          });
+          const { chunk } = await readTranscriptAppendedChunk(transcriptPath, 0);
+          if (!chunk) return "";
+          const lines = chunk.split("\n");
+          let latestReply = null;
+          for (const line of lines) {
+            const parsedReply = parseLateAssistantReplyFromTranscriptLine(line, dispatchStartedAt);
+            if (!parsedReply) continue;
+            latestReply = parsedReply;
+          }
+          const text = latestReply?.text ? markdownToWecomText(latestReply.text).trim() : "";
+          return text || "";
+        } catch {
+          return "";
+        }
+      })();
+      if (fallbackFromTranscript) {
+        safeFinishStream(fallbackFromTranscript);
+        return;
+      }
+    } catch {
+      // ignore transcript fallback errors in catch block
+    }
+    safeFinishStream(`抱歉，当前模型请求超时或网络不稳定，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`);
+  } finally {
+    for (const filePath of tempPathsToCleanup) {
+      scheduleTempFileCleanup(filePath, api.logger);
+    }
+  }
+}
 
 // 异步处理入站消息 - 使用 gateway 内部 agent runtime API
 async function processInboundMessage({
