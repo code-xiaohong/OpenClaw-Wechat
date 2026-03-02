@@ -4,9 +4,13 @@ import { spawn } from "node:child_process";
 
 function parseArgs(argv) {
   const out = {
+    mode: "bot",
     botUrl: "",
+    agentUrl: "",
     configPath: process.env.OPENCLAW_CONFIG_PATH || "",
+    account: "default",
     fromUser: "",
+    content: "/status",
     timeoutMs: 12000,
     pollCount: 15,
     pollIntervalMs: 800,
@@ -15,14 +19,26 @@ function parseArgs(argv) {
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
-    if (arg === "--bot-url" && next) {
+    if (arg === "--mode" && next) {
+      out.mode = String(next).trim().toLowerCase();
+      i += 1;
+    } else if (arg === "--bot-url" && next) {
       out.botUrl = next;
+      i += 1;
+    } else if (arg === "--agent-url" && next) {
+      out.agentUrl = next;
       i += 1;
     } else if (arg === "--config" && next) {
       out.configPath = next;
       i += 1;
+    } else if (arg === "--account" && next) {
+      out.account = next;
+      i += 1;
     } else if (arg === "--from-user" && next) {
       out.fromUser = next;
+      i += 1;
+    } else if (arg === "--content" && next) {
+      out.content = next;
       i += 1;
     } else if (arg === "--timeout-ms" && next) {
       const n = Number(next);
@@ -44,8 +60,15 @@ function parseArgs(argv) {
     }
   }
 
-  if (!String(out.botUrl ?? "").trim()) {
+  const mode = out.mode;
+  if (!["bot", "agent", "all"].includes(mode)) {
+    throw new Error("Invalid --mode, expected one of: bot | agent | all");
+  }
+  if ((mode === "bot" || mode === "all") && !String(out.botUrl ?? "").trim()) {
     throw new Error("Missing required argument: --bot-url <https://.../wecom/bot/callback>");
+  }
+  if ((mode === "agent" || mode === "all") && !String(out.agentUrl ?? "").trim()) {
+    throw new Error("Missing required argument: --agent-url <https://.../wecom/callback>");
   }
 
   return out;
@@ -55,12 +78,16 @@ function printHelp() {
   console.log(`OpenClaw-Wechat remote E2E
 
 Usage:
-  npm run wecom:remote:e2e -- --bot-url <https://.../wecom/bot/callback> [options]
+  npm run wecom:remote:e2e -- --mode <bot|agent|all> [options]
 
 Options:
-  --bot-url <url>          Required: remote Bot callback URL
+  --mode <m>               Required: bot | agent | all
+  --bot-url <url>          Required when mode=bot/all
+  --agent-url <url>        Required when mode=agent/all
   --config <path>          Optional: OpenClaw config path
+  --account <id>           Optional: account id for Agent e2e (default: default)
   --from-user <userid>     Optional: simulated sender
+  --content <text>         Optional: simulated content (default: /status)
   --timeout-ms <ms>        Optional: HTTP timeout (default: 12000)
   --poll-count <n>         Optional: stream refresh polls (default: 15)
   --poll-interval-ms <ms>  Optional: stream refresh interval (default: 800)
@@ -91,31 +118,71 @@ async function main() {
     selfcheckArgs.unshift("--config");
   }
 
-  const botArgs = [
-    "--url",
-    args.botUrl,
-    "--content",
-    "/status",
-    "--timeout-ms",
-    String(args.timeoutMs),
-    "--poll-count",
-    String(args.pollCount),
-    "--poll-interval-ms",
-    String(args.pollIntervalMs),
-  ];
-  if (args.configPath) {
-    botArgs.unshift(args.configPath);
-    botArgs.unshift("--config");
+  const steps = [];
+  steps.push({
+    label: "WeCom account selfcheck (network)",
+    script: "./scripts/wecom-selfcheck.mjs",
+    args: selfcheckArgs,
+  });
+  if (args.mode === "agent" || args.mode === "all") {
+    const agentArgs = [
+      "--url",
+      args.agentUrl,
+      "--account",
+      args.account,
+      "--content",
+      args.content,
+      "--timeout-ms",
+      String(args.timeoutMs),
+    ];
+    if (args.configPath) {
+      agentArgs.unshift(args.configPath);
+      agentArgs.unshift("--config");
+    }
+    if (args.fromUser) {
+      agentArgs.push("--from-user", args.fromUser);
+    }
+    steps.push({
+      label: "WeCom Agent remote E2E",
+      script: "./scripts/wecom-agent-selfcheck.mjs",
+      args: agentArgs,
+    });
   }
-  if (args.fromUser) {
-    botArgs.push("--from-user", args.fromUser);
+  if (args.mode === "bot" || args.mode === "all") {
+    const botArgs = [
+      "--url",
+      args.botUrl,
+      "--content",
+      args.content,
+      "--timeout-ms",
+      String(args.timeoutMs),
+      "--poll-count",
+      String(args.pollCount),
+      "--poll-interval-ms",
+      String(args.pollIntervalMs),
+    ];
+    if (args.configPath) {
+      botArgs.unshift(args.configPath);
+      botArgs.unshift("--config");
+    }
+    if (args.fromUser) {
+      botArgs.push("--from-user", args.fromUser);
+    }
+    steps.push({
+      label: "WeCom Bot remote E2E",
+      script: "./scripts/wecom-bot-selfcheck.mjs",
+      args: botArgs,
+    });
   }
 
-  console.log("[1/2] WeCom account selfcheck (network)");
-  await runNode("./scripts/wecom-selfcheck.mjs", selfcheckArgs);
-
-  console.log("[2/2] WeCom Bot remote E2E");
-  await runNode("./scripts/wecom-bot-selfcheck.mjs", botArgs);
+  let stepIndex = 0;
+  const totalSteps = steps.length;
+  for (const step of steps) {
+    stepIndex += 1;
+    console.log(`[${stepIndex}/${totalSteps}] ${step.label}`);
+    // eslint-disable-next-line no-await-in-loop
+    await runNode(step.script, step.args);
+  }
 
   console.log("Remote E2E completed.");
 }

@@ -492,6 +492,7 @@ openclaw gateway status
 openclaw status --deep
 openclaw logs --follow
 npm run wecom:selfcheck -- --all-accounts
+npm run wecom:agent:selfcheck -- --account default
 npm run wecom:bot:selfcheck
 ```
 
@@ -503,8 +504,9 @@ npm run wecom:bot:selfcheck
 |---|---|
 | `npm test` | 语法与单测 |
 | `npm run wecom:selfcheck -- --all-accounts` | 配置+网络体检 |
+| `npm run wecom:agent:selfcheck -- --account <id>` | Agent 端到端链路体检（URL 验证 + 加密 POST） |
 | `npm run wecom:bot:selfcheck` | Bot 端到端链路体检（签名/加密/stream-refresh） |
-| `npm run wecom:remote:e2e -- --bot-url <公网回调>` | 远端 Bot 端到端验证（公网域名/隧道） |
+| `npm run wecom:remote:e2e -- --mode all --agent-url <公网Agent回调> --bot-url <公网Bot回调>` | 远端矩阵验证（Agent+Bot） |
 | `npm run wecom:smoke` | 升级后快速回归（Agent 主链路） |
 | `npm run wecom:smoke -- --with-bot-e2e` | 升级后快速回归（含 Bot E2E） |
 | `openclaw gateway restart` | 重启网关 |
