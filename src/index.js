@@ -111,6 +111,25 @@ function decryptWecom({ aesKey, cipherTextBase64 }) {
   return { msg, corpId };
 }
 
+function decryptWecomMediaBuffer({ aesKey, encryptedBuffer }) {
+  if (!Buffer.isBuffer(encryptedBuffer) || encryptedBuffer.length === 0) {
+    throw new Error("empty media buffer");
+  }
+  const key = decodeAesKey(aesKey);
+  const iv = key.subarray(0, 16);
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+  decipher.setAutoPadding(false);
+  const decrypted = Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
+  const padLen = decrypted[decrypted.length - 1];
+  if (!Number.isFinite(padLen) || padLen < 1 || padLen > 32) {
+    return decrypted;
+  }
+  for (let i = decrypted.length - padLen; i < decrypted.length; i += 1) {
+    if (decrypted[i] !== padLen) return decrypted;
+  }
+  return decrypted.subarray(0, decrypted.length - padLen);
+}
+
 function pkcs7Pad(buf, blockSize = 32) {
   const amountToPad = blockSize - (buf.length % blockSize || blockSize);
   const pad = Buffer.alloc(amountToPad === 0 ? blockSize : amountToPad, amountToPad === 0 ? blockSize : amountToPad);
@@ -1364,6 +1383,57 @@ async function fetchMediaFromUrl(url, { proxyUrl, logger, forceProxy = false, ma
   return { buffer, contentType };
 }
 
+function detectImageContentTypeFromBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return "";
+  // JPEG
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  // PNG
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  // GIF87a / GIF89a
+  if (
+    buffer.length >= 6 &&
+    (buffer.subarray(0, 6).toString("ascii") === "GIF87a" || buffer.subarray(0, 6).toString("ascii") === "GIF89a")
+  ) {
+    return "image/gif";
+  }
+  // WEBP: RIFF....WEBP
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  // BMP
+  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d) return "image/bmp";
+  // HEIC / HEIF (ISO BMFF ftyp brand)
+  if (buffer.length >= 12) {
+    const boxType = buffer.subarray(4, 8).toString("ascii");
+    const brand = buffer.subarray(8, 12).toString("ascii").toLowerCase();
+    if (boxType === "ftyp") {
+      if (brand.startsWith("heic") || brand.startsWith("heix") || brand.startsWith("hevc") || brand.startsWith("hevx")) {
+        return "image/heic";
+      }
+      if (brand.startsWith("mif1") || brand.startsWith("msf1")) {
+        return "image/heif";
+      }
+    }
+  }
+  return "";
+}
+
 function pickImageFileExtension({ contentType, sourceUrl }) {
   const normalizedType = String(contentType ?? "")
     .trim()
@@ -2614,6 +2684,7 @@ async function processBotInboundMessage({
       const fetchedImagePaths = [];
       const imageUrlsToFetch = normalizedImageUrls.slice(0, 3);
       const tempDir = join(tmpdir(), WECOM_TEMP_DIR_NAME);
+      const botModeConfig = resolveWecomBotConfig(api);
       await mkdir(tempDir, { recursive: true });
       for (const imageUrl of imageUrlsToFetch) {
         try {
@@ -2628,19 +2699,41 @@ async function processBotInboundMessage({
             .toLowerCase()
             .split(";")[0]
             .trim();
-          if (normalizedType && !normalizedType.startsWith("image/")) {
-            throw new Error(`unexpected content-type: ${normalizedType}`);
+          let effectiveBuffer = buffer;
+          let effectiveImageType =
+            normalizedType.startsWith("image/") ? normalizedType : detectImageContentTypeFromBuffer(buffer);
+          if (!effectiveImageType && botModeConfig?.encodingAesKey) {
+            try {
+              const decryptedBuffer = decryptWecomMediaBuffer({
+                aesKey: botModeConfig.encodingAesKey,
+                encryptedBuffer: buffer,
+              });
+              const decryptedImageType = detectImageContentTypeFromBuffer(decryptedBuffer);
+              if (decryptedImageType) {
+                effectiveBuffer = decryptedBuffer;
+                effectiveImageType = decryptedImageType;
+                api.logger.info?.(
+                  `wecom(bot): decrypted media buffer from content-type=${normalizedType || "unknown"} to ${decryptedImageType}`,
+                );
+              }
+            } catch (decryptErr) {
+              api.logger.warn?.(`wecom(bot): media decrypt attempt failed: ${String(decryptErr?.message || decryptErr)}`);
+            }
           }
-          const ext = pickImageFileExtension({ contentType, sourceUrl: imageUrl });
+          if (!effectiveImageType) {
+            const headerHex = buffer.subarray(0, 16).toString("hex");
+            throw new Error(`unexpected content-type: ${normalizedType || "unknown"} header=${headerHex}`);
+          }
+          const ext = pickImageFileExtension({ contentType: effectiveImageType, sourceUrl: imageUrl });
           const imageTempPath = join(
             tempDir,
             `bot-image-${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`,
           );
-          await writeFile(imageTempPath, buffer);
+          await writeFile(imageTempPath, effectiveBuffer);
           fetchedImagePaths.push(imageTempPath);
           tempPathsToCleanup.push(imageTempPath);
           api.logger.info?.(
-            `wecom(bot): downloaded image from url, size=${buffer.length} bytes, path=${imageTempPath}`,
+            `wecom(bot): downloaded image from url, size=${effectiveBuffer.length} bytes, path=${imageTempPath}`,
           );
         } catch (imageErr) {
           api.logger.warn?.(`wecom(bot): failed to fetch image url: ${String(imageErr?.message || imageErr)}`);
