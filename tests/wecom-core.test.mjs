@@ -294,6 +294,9 @@ test("resolveWecomBotModeConfig reads config and env fallback", () => {
         webhookPath: "/bot/hook",
         placeholderText: "thinking",
         streamExpireMs: 9999999,
+        replyTimeoutMs: 9999999,
+        lateReplyWatchMs: 9999999,
+        lateReplyPollMs: 10,
       },
     },
     envVars: {},
@@ -304,6 +307,9 @@ test("resolveWecomBotModeConfig reads config and env fallback", () => {
   assert.equal(fromConfig.webhookPath, "/bot/hook");
   assert.equal(fromConfig.placeholderText, "thinking");
   assert.equal(fromConfig.streamExpireMs, 60 * 60 * 1000);
+  assert.equal(fromConfig.replyTimeoutMs, 10 * 60 * 1000);
+  assert.equal(fromConfig.lateReplyWatchMs, 10 * 60 * 1000);
+  assert.equal(fromConfig.lateReplyPollMs, 500);
 
   const fromEnv = core.resolveWecomBotModeConfig({
     channelConfig: {},
@@ -314,6 +320,9 @@ test("resolveWecomBotModeConfig reads config and env fallback", () => {
       WECOM_BOT_WEBHOOK_PATH: "/env/bot",
       WECOM_BOT_PLACEHOLDER_TEXT: "处理中",
       WECOM_BOT_STREAM_EXPIRE_MS: "45000",
+      WECOM_BOT_REPLY_TIMEOUT_MS: "180000",
+      WECOM_BOT_LATE_REPLY_WATCH_MS: "60000",
+      WECOM_BOT_LATE_REPLY_POLL_MS: "1500",
     },
     processEnv: {},
   });
@@ -323,6 +332,18 @@ test("resolveWecomBotModeConfig reads config and env fallback", () => {
   assert.equal(fromEnv.webhookPath, "/env/bot");
   assert.equal(fromEnv.placeholderText, "处理中");
   assert.equal(fromEnv.streamExpireMs, 45000);
+  assert.equal(fromEnv.replyTimeoutMs, 180000);
+  assert.equal(fromEnv.lateReplyWatchMs, 60000);
+  assert.equal(fromEnv.lateReplyPollMs, 1500);
+
+  const fromSharedEnv = core.resolveWecomBotModeConfig({
+    channelConfig: {},
+    envVars: {
+      WECOM_REPLY_TIMEOUT_MS: "70000",
+    },
+    processEnv: {},
+  });
+  assert.equal(fromSharedEnv.replyTimeoutMs, 70000);
 
   const explicitEmpty = core.resolveWecomBotModeConfig({
     channelConfig: {
@@ -335,4 +356,92 @@ test("resolveWecomBotModeConfig reads config and env fallback", () => {
     processEnv: {},
   });
   assert.equal(explicitEmpty.placeholderText, "");
+});
+
+test("resolveWecomDeliveryFallbackConfig defaults and normalization", () => {
+  const defaults = core.resolveWecomDeliveryFallbackConfig({
+    channelConfig: {},
+    envVars: {},
+    processEnv: {},
+  });
+  assert.equal(defaults.enabled, false);
+  assert.deepEqual(defaults.order, ["active_stream", "response_url", "webhook_bot", "agent_push"]);
+
+  const configured = core.resolveWecomDeliveryFallbackConfig({
+    channelConfig: {
+      delivery: {
+        fallback: {
+          enabled: true,
+          order: ["response-url", "webhook", "agent"],
+        },
+      },
+    },
+    envVars: {},
+    processEnv: {},
+  });
+  assert.equal(configured.enabled, true);
+  assert.deepEqual(configured.order, ["response_url", "webhook_bot", "agent_push"]);
+});
+
+test("resolveWecomWebhookBotDeliveryConfig reads config and env", () => {
+  const fromConfig = core.resolveWecomWebhookBotDeliveryConfig({
+    channelConfig: {
+      webhookBot: {
+        enabled: true,
+        url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=config",
+        timeoutMs: 12000,
+      },
+    },
+    envVars: {},
+    processEnv: {},
+  });
+  assert.equal(fromConfig.enabled, true);
+  assert.equal(fromConfig.url, "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=config");
+  assert.equal(fromConfig.timeoutMs, 12000);
+
+  const fromEnv = core.resolveWecomWebhookBotDeliveryConfig({
+    channelConfig: {},
+    envVars: {
+      WECOM_WEBHOOK_BOT_ENABLED: "true",
+      WECOM_WEBHOOK_BOT_KEY: "env-key",
+      WECOM_WEBHOOK_BOT_TIMEOUT_MS: "500",
+    },
+    processEnv: {},
+  });
+  assert.equal(fromEnv.enabled, true);
+  assert.equal(fromEnv.key, "env-key");
+  // min bound
+  assert.equal(fromEnv.timeoutMs, 1000);
+});
+
+test("resolveWecomStreamManagerConfig applies bounds", () => {
+  const cfg = core.resolveWecomStreamManagerConfig({
+    channelConfig: {
+      stream: {
+        manager: {
+          enabled: true,
+          timeoutMs: 999999999,
+          maxConcurrentPerSession: 0,
+        },
+      },
+    },
+    envVars: {},
+    processEnv: {},
+  });
+  assert.equal(cfg.enabled, true);
+  assert.equal(cfg.timeoutMs, 10 * 60 * 1000);
+  assert.equal(cfg.maxConcurrentPerSession, 1);
+});
+
+test("resolveWecomObservabilityConfig reads env fallback", () => {
+  const cfg = core.resolveWecomObservabilityConfig({
+    channelConfig: {},
+    envVars: {
+      WECOM_OBSERVABILITY_ENABLED: "false",
+      WECOM_OBSERVABILITY_PAYLOAD_META: "off",
+    },
+    processEnv: {},
+  });
+  assert.equal(cfg.enabled, false);
+  assert.equal(cfg.logPayloadMeta, false);
 });

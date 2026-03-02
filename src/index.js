@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
 import { ProxyAgent } from "undici";
+import { WecomSessionTaskQueue, WecomStreamManager } from "./core/stream-manager.js";
+import { createWecomDeliveryRouter, parseWecomResponseUrlResult } from "./core/delivery-router.js";
+import { resolveWebhookBotSendUrl, webhookSendText } from "./wecom/webhook-bot.js";
 import {
   WECOM_TEXT_BYTE_LIMIT,
   buildWecomSessionId,
@@ -23,8 +26,12 @@ import {
   resolveWecomBotModeConfig,
   resolveWecomCommandPolicyConfig,
   resolveWecomDebounceConfig,
+  resolveWecomDeliveryFallbackConfig,
   resolveWecomGroupChatConfig,
+  resolveWecomObservabilityConfig,
   resolveWecomStreamingConfig,
+  resolveWecomStreamManagerConfig,
+  resolveWecomWebhookBotDeliveryConfig,
   resolveVoiceTranscriptionConfig,
   resolveWecomProxyConfig,
   shouldTriggerWecomGroupResponse,
@@ -54,8 +61,11 @@ const TEXT_MESSAGE_DEBOUNCE_BUFFERS = new Map();
 const ACTIVE_LATE_REPLY_WATCHERS = new Map();
 const DELIVERED_TRANSCRIPT_REPLY_CACHE = new Map();
 const TRANSCRIPT_REPLY_CACHE_TTL_MS = 30 * 60 * 1000;
-const BOT_STREAMS = new Map();
-let BOT_STREAM_CLEANUP_TIMER = null;
+const BOT_STREAM_MANAGER = new WecomStreamManager({ expireMs: 10 * 60 * 1000 });
+const BOT_SESSION_TASK_QUEUE = new WecomSessionTaskQueue({ maxConcurrentPerSession: 1 });
+const WECOM_SESSION_TASK_QUEUE = new WecomSessionTaskQueue({ maxConcurrentPerSession: 1 });
+const BOT_RESPONSE_URL_CACHE = new Map();
+const BOT_RESPONSE_URL_TTL_MS = 60 * 60 * 1000;
 
 function readRequestBody(req, maxSize = MAX_REQUEST_BODY_SIZE) {
   return new Promise((resolve, reject) => {
@@ -186,64 +196,76 @@ function buildWecomBotEncryptedResponse({ token, aesKey, timestamp, nonce, plain
 }
 
 function createBotStream(streamId, initialContent = "") {
-  const now = Date.now();
-  BOT_STREAMS.set(streamId, {
-    id: streamId,
-    content: String(initialContent ?? ""),
-    finished: false,
-    createdAt: now,
-    updatedAt: now,
-  });
+  return BOT_STREAM_MANAGER.create(streamId, initialContent);
 }
 
 function updateBotStream(streamId, content, { append = false, finished = false } = {}) {
-  const existing = BOT_STREAMS.get(streamId);
-  if (!existing) return null;
-  const incoming = String(content ?? "");
-  if (append) {
-    existing.content = `${existing.content}${incoming}`;
-  } else {
-    existing.content = incoming;
-  }
-  if (finished) existing.finished = true;
-  existing.updatedAt = Date.now();
-  BOT_STREAMS.set(streamId, existing);
-  return existing;
+  return BOT_STREAM_MANAGER.update(streamId, content, { append, finished });
 }
 
 function finishBotStream(streamId, content) {
-  if (!BOT_STREAMS.has(streamId)) return null;
-  if (content != null) {
-    return updateBotStream(streamId, content, { append: false, finished: true });
-  }
-  const existing = BOT_STREAMS.get(streamId);
-  existing.finished = true;
-  existing.updatedAt = Date.now();
-  BOT_STREAMS.set(streamId, existing);
-  return existing;
+  return BOT_STREAM_MANAGER.finish(streamId, content);
 }
 
 function getBotStream(streamId) {
-  return BOT_STREAMS.get(streamId) ?? null;
+  return BOT_STREAM_MANAGER.get(streamId);
 }
 
-function cleanupExpiredBotStreams(expireMs = 10 * 60 * 1000) {
+function hasBotStream(streamId) {
+  return BOT_STREAM_MANAGER.has(streamId);
+}
+
+function upsertBotResponseUrlCache({ sessionId, responseUrl }) {
+  const normalizedSessionId = String(sessionId ?? "").trim();
+  const normalizedUrl = String(responseUrl ?? "").trim();
+  if (!normalizedSessionId || !normalizedUrl) return;
+  BOT_RESPONSE_URL_CACHE.set(normalizedSessionId, {
+    url: normalizedUrl,
+    used: false,
+    expiresAt: Date.now() + BOT_RESPONSE_URL_TTL_MS,
+    updatedAt: Date.now(),
+  });
+}
+
+function getBotResponseUrlCache(sessionId) {
+  const normalizedSessionId = String(sessionId ?? "").trim();
+  if (!normalizedSessionId) return null;
+  const cached = BOT_RESPONSE_URL_CACHE.get(normalizedSessionId);
+  if (!cached) return null;
+  if (Number(cached.expiresAt || 0) <= Date.now()) {
+    BOT_RESPONSE_URL_CACHE.delete(normalizedSessionId);
+    return null;
+  }
+  return cached;
+}
+
+function markBotResponseUrlUsed(sessionId) {
+  const normalizedSessionId = String(sessionId ?? "").trim();
+  if (!normalizedSessionId) return;
+  const cached = BOT_RESPONSE_URL_CACHE.get(normalizedSessionId);
+  if (!cached) return;
+  cached.used = true;
+  cached.updatedAt = Date.now();
+  BOT_RESPONSE_URL_CACHE.set(normalizedSessionId, cached);
+}
+
+function cleanupBotResponseUrlCache(ttlMs = BOT_RESPONSE_URL_TTL_MS) {
   const now = Date.now();
-  for (const [streamId, stream] of BOT_STREAMS.entries()) {
-    const age = now - Number(stream?.updatedAt ?? now);
-    if (age > expireMs) {
-      BOT_STREAMS.delete(streamId);
+  for (const [sessionId, cached] of BOT_RESPONSE_URL_CACHE.entries()) {
+    const expiresAt = Number(cached?.expiresAt ?? now + ttlMs);
+    if (expiresAt <= now) {
+      BOT_RESPONSE_URL_CACHE.delete(sessionId);
     }
   }
 }
 
+function cleanupExpiredBotStreams(expireMs = 10 * 60 * 1000) {
+  BOT_STREAM_MANAGER.cleanup(expireMs);
+  cleanupBotResponseUrlCache();
+}
+
 function ensureBotStreamCleanupTimer(expireMs, logger) {
-  if (BOT_STREAM_CLEANUP_TIMER) return;
-  BOT_STREAM_CLEANUP_TIMER = setInterval(() => {
-    cleanupExpiredBotStreams(expireMs);
-  }, 60 * 1000);
-  BOT_STREAM_CLEANUP_TIMER.unref?.();
-  logger?.info?.(`wecom(bot): stream cleanup timer started (expireMs=${expireMs})`);
+  BOT_STREAM_MANAGER.startCleanup({ expireMs, logger });
 }
 
 function collectWecomBotImageUrls(imageLike) {
@@ -382,6 +404,10 @@ function requireEnv(name, fallback) {
   const v = process.env[name];
   if (v == null || v === "") return fallback;
   return v;
+}
+
+function buildWecomBotSessionId(userId) {
+  return `wecom-bot:${String(userId ?? "").trim().toLowerCase()}`;
 }
 
 function asNumber(v, fallback = null) {
@@ -1844,6 +1870,209 @@ function resolveWecomReplyStreamingPolicy(api) {
   return resolveWecomStreamingConfig(resolveWecomPolicyInputs(api));
 }
 
+function resolveWecomDeliveryFallbackPolicy(api) {
+  return resolveWecomDeliveryFallbackConfig(resolveWecomPolicyInputs(api));
+}
+
+function resolveWecomWebhookBotDeliveryPolicy(api) {
+  return resolveWecomWebhookBotDeliveryConfig(resolveWecomPolicyInputs(api));
+}
+
+function resolveWecomStreamManagerPolicy(api) {
+  return resolveWecomStreamManagerConfig(resolveWecomPolicyInputs(api));
+}
+
+function resolveWecomObservabilityPolicy(api) {
+  return resolveWecomObservabilityConfig(resolveWecomPolicyInputs(api));
+}
+
+function createDeliveryTraceId(prefix = "wecom") {
+  const stamp = Date.now().toString(36);
+  const rand = Math.random().toString(36).slice(2, 10);
+  return `${prefix}-${stamp}-${rand}`;
+}
+
+function syncWecomSessionQueuePolicy(api) {
+  const policy = resolveWecomStreamManagerPolicy(api);
+  WECOM_SESSION_TASK_QUEUE.setMaxConcurrentPerSession(policy.maxConcurrentPerSession);
+  BOT_SESSION_TASK_QUEUE.setMaxConcurrentPerSession(policy.maxConcurrentPerSession);
+  BOT_STREAM_MANAGER.setExpireMs(policy.timeoutMs);
+  return policy;
+}
+
+function executeInboundTaskWithSessionQueue({ api, sessionId, isBot = false, task }) {
+  const policy = syncWecomSessionQueuePolicy(api);
+  if (!policy.enabled) {
+    return task();
+  }
+  const queue = isBot ? BOT_SESSION_TASK_QUEUE : WECOM_SESSION_TASK_QUEUE;
+  return queue.enqueue(sessionId, task);
+}
+
+async function sendWecomBotTextViaResponseUrl({
+  responseUrl,
+  text,
+  logger,
+  proxyUrl,
+  timeoutMs = 8000,
+}) {
+  const normalizedUrl = String(responseUrl ?? "").trim();
+  if (!normalizedUrl) {
+    throw new Error("missing response_url");
+  }
+  const payload = {
+    msgtype: "text",
+    text: {
+      content: String(text ?? ""),
+    },
+  };
+  const requestOptions = attachWecomProxyDispatcher(
+    normalizedUrl,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(Math.max(1000, Number(timeoutMs) || 8000)),
+    },
+    { proxyUrl, logger },
+  );
+  const response = await fetch(normalizedUrl, requestOptions);
+  const responseBody = await response.text().catch(() => "");
+  const result = parseWecomResponseUrlResult(response, responseBody);
+  if (!result.accepted) {
+    throw new Error(
+      `response_url rejected: status=${response.status} errcode=${result.errcode ?? "unknown"} errmsg=${result.errmsg || "n/a"}`,
+    );
+  }
+  return {
+    status: response.status,
+    errcode: result.errcode,
+  };
+}
+
+async function deliverBotReplyText({
+  api,
+  fromUser,
+  sessionId,
+  streamId,
+  responseUrl,
+  text,
+  reason = "reply",
+} = {}) {
+  const fallbackPolicy = resolveWecomDeliveryFallbackPolicy(api);
+  const webhookBotPolicy = resolveWecomWebhookBotDeliveryPolicy(api);
+  const observabilityPolicy = resolveWecomObservabilityPolicy(api);
+  const botProxyUrl = resolveWecomBotProxyConfig(api);
+
+  const normalizedSessionId = String(sessionId ?? "").trim() || buildWecomBotSessionId(fromUser);
+  const inlineResponseUrl = String(responseUrl ?? "").trim();
+  if (inlineResponseUrl) {
+    upsertBotResponseUrlCache({
+      sessionId: normalizedSessionId,
+      responseUrl: inlineResponseUrl,
+    });
+  }
+  const cachedResponseUrl = getBotResponseUrlCache(normalizedSessionId);
+  const traceId = createDeliveryTraceId("wecom-bot");
+  const router = createWecomDeliveryRouter({
+    logger: api.logger,
+    fallbackConfig: fallbackPolicy,
+    observability: observabilityPolicy,
+    handlers: {
+      active_stream: async ({ text: content }) => {
+        if (!streamId || !hasBotStream(streamId)) {
+          return { ok: false, reason: "stream-missing" };
+        }
+        finishBotStream(streamId, content);
+        return {
+          ok: true,
+          meta: {
+            streamId,
+          },
+        };
+      },
+      response_url: async ({ text: content }) => {
+        const targetUrl = inlineResponseUrl || cachedResponseUrl?.url || "";
+        if (!targetUrl) {
+          return { ok: false, reason: "response-url-missing" };
+        }
+        if (cachedResponseUrl?.used) {
+          return { ok: false, reason: "response-url-used" };
+        }
+        const result = await sendWecomBotTextViaResponseUrl({
+          responseUrl: targetUrl,
+          text: content,
+          logger: api.logger,
+          proxyUrl: botProxyUrl,
+          timeoutMs: webhookBotPolicy.timeoutMs,
+        });
+        markBotResponseUrlUsed(normalizedSessionId);
+        return {
+          ok: true,
+          meta: {
+            status: result.status,
+            errcode: result.errcode ?? 0,
+          },
+        };
+      },
+      webhook_bot: async ({ text: content }) => {
+        if (!webhookBotPolicy.enabled) {
+          return { ok: false, reason: "webhook-bot-disabled" };
+        }
+        const sendUrl = resolveWebhookBotSendUrl({
+          url: webhookBotPolicy.url,
+          key: webhookBotPolicy.key,
+        });
+        if (!sendUrl) {
+          return { ok: false, reason: "webhook-bot-url-missing" };
+        }
+        await webhookSendText({
+          url: webhookBotPolicy.url,
+          key: webhookBotPolicy.key,
+          content,
+          timeoutMs: webhookBotPolicy.timeoutMs,
+        });
+        return { ok: true };
+      },
+      agent_push: async ({ text: content }) => {
+        const account = getWecomConfig(api, "default") ?? getWecomConfig(api);
+        if (!account?.corpId || !account?.corpSecret || !account?.agentId) {
+          return { ok: false, reason: "agent-config-missing" };
+        }
+        await sendWecomText({
+          corpId: account.corpId,
+          corpSecret: account.corpSecret,
+          agentId: account.agentId,
+          toUser: fromUser,
+          text: content,
+          logger: api.logger,
+          proxyUrl: account.outboundProxy,
+        });
+        return {
+          ok: true,
+          meta: {
+            accountId: account.accountId || "default",
+          },
+        };
+      },
+    },
+  });
+
+  return router.deliverText({
+    text,
+    traceId,
+    meta: {
+      reason,
+      fromUser,
+      sessionId: normalizedSessionId,
+      streamId: streamId || "",
+      hasResponseUrl: Boolean(inlineResponseUrl || cachedResponseUrl?.url),
+    },
+  });
+}
+
 function buildTextDebounceBufferKey({ accountId, fromUser, chatId, isGroupChat }) {
   const account = String(accountId ?? "default").trim().toLowerCase() || "default";
   const user = String(fromUser ?? "").trim().toLowerCase();
@@ -1855,8 +2084,16 @@ function buildTextDebounceBufferKey({ accountId, fromUser, chatId, isGroupChat }
 }
 
 function dispatchTextPayload(api, payload, reason = "direct") {
+  const sessionId = buildWecomSessionId(payload?.fromUser);
   messageProcessLimiter
-    .execute(() => processInboundMessage(payload))
+    .execute(() =>
+      executeInboundTaskWithSessionQueue({
+        api,
+        sessionId,
+        isBot: false,
+        task: () => processInboundMessage(payload),
+      }),
+    )
     .catch((err) => {
       api.logger.error?.(`wecom: async text processing failed (${reason}): ${err.message}`);
     });
@@ -2128,6 +2365,13 @@ function registerWecomBotWebhookRoute(api) {
 
           const streamId = `stream_${crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`}`;
           createBotStream(streamId, botConfig.placeholderText);
+          const botSessionId = buildWecomBotSessionId(parsed.fromUser);
+          if (parsed.responseUrl) {
+            upsertBotResponseUrlCache({
+              sessionId: botSessionId,
+              responseUrl: parsed.responseUrl,
+            });
+          }
           const encryptedResponse = buildWecomBotEncryptedResponse({
             token: botConfig.token,
             aesKey: botConfig.encodingAesKey,
@@ -2148,24 +2392,42 @@ function registerWecomBotWebhookRoute(api) {
 
           messageProcessLimiter
             .execute(() =>
-              processBotInboundMessage({
+              executeInboundTaskWithSessionQueue({
                 api,
-                streamId,
-                fromUser: parsed.fromUser,
-                content: parsed.content,
-                msgType: parsed.msgType,
-                msgId: parsed.msgId,
-                chatId: parsed.chatId,
-                isGroupChat: parsed.isGroupChat,
-                imageUrls: parsed.imageUrls,
+                sessionId: botSessionId,
+                isBot: true,
+                task: () =>
+                  processBotInboundMessage({
+                    api,
+                    streamId,
+                    fromUser: parsed.fromUser,
+                    content: parsed.content,
+                    msgType: parsed.msgType,
+                    msgId: parsed.msgId,
+                    chatId: parsed.chatId,
+                    isGroupChat: parsed.isGroupChat,
+                    imageUrls: parsed.imageUrls,
+                    responseUrl: parsed.responseUrl,
+                  }),
               }),
             )
             .catch((err) => {
               api.logger.error?.(`wecom(bot): async message processing failed: ${String(err?.message || err)}`);
-              finishBotStream(
+              deliverBotReplyText({
+                api,
+                fromUser: parsed.fromUser,
+                sessionId: botSessionId,
                 streamId,
-                `抱歉，当前模型请求失败，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`,
-              );
+                responseUrl: parsed.responseUrl,
+                text: `抱歉，当前模型请求失败，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`,
+                reason: "bot-async-processing-error",
+              }).catch((deliveryErr) => {
+                api.logger.warn?.(`wecom(bot): failed to deliver async error reply: ${String(deliveryErr?.message || deliveryErr)}`);
+                finishBotStream(
+                  streamId,
+                  `抱歉，当前模型请求失败，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`,
+                );
+              });
             });
           return;
         }
@@ -2191,6 +2453,10 @@ function registerWecomBotWebhookRoute(api) {
 export default function register(api) {
   // 保存 runtime 引用
   gatewayRuntime = api.runtime;
+  const streamManagerPolicy = syncWecomSessionQueuePolicy(api);
+  const fallbackPolicy = resolveWecomDeliveryFallbackPolicy(api);
+  const webhookBotPolicy = resolveWecomWebhookBotDeliveryPolicy(api);
+  const observabilityPolicy = resolveWecomObservabilityPolicy(api);
 
   // 初始化配置
   const botModeConfig = resolveWecomBotConfig(api);
@@ -2205,6 +2471,20 @@ export default function register(api) {
     );
   } else {
     api.logger.warn?.("wecom: no configuration found (check channels.wecom in openclaw.json)");
+  }
+  api.logger.info?.(
+    `wecom: stream.manager ${streamManagerPolicy.enabled ? "on" : "off"} (timeoutMs=${streamManagerPolicy.timeoutMs}, perSession=${streamManagerPolicy.maxConcurrentPerSession})`,
+  );
+  api.logger.info?.(
+    `wecom: delivery.fallback ${fallbackPolicy.enabled ? "on" : "off"} (order=${fallbackPolicy.order.join(">")})`,
+  );
+  if (webhookBotPolicy.enabled) {
+    api.logger.info?.(
+      `wecom: webhookBot fallback enabled (${webhookBotPolicy.url || webhookBotPolicy.key ? "configured" : "missing-url"})`,
+    );
+  }
+  if (observabilityPolicy.enabled) {
+    api.logger.info?.(`wecom: observability enabled (payloadMeta=${observabilityPolicy.logPayloadMeta ? "on" : "off"})`);
   }
 
   api.registerChannel({ plugin: WecomChannelPlugin });
@@ -2356,68 +2636,109 @@ export default function register(api) {
             isGroupChat,
             msgId,
           };
+          const inboundSessionId = buildWecomSessionId(fromUser);
 
           // 异步处理消息，不阻塞响应
           if (msgType === "text" && msgObj?.Content) {
             scheduleTextInboundProcessing(api, basePayload, msgObj.Content);
           } else if (msgType === "image" && msgObj?.MediaId) {
-            messageProcessLimiter.execute(() =>
-              processInboundMessage({
-                ...basePayload,
-                mediaId: msgObj.MediaId,
-                msgType: "image",
-                picUrl: msgObj.PicUrl,
-              })
-            ).catch((err) => {
-              api.logger.error?.(`wecom: async image processing failed: ${err.message}`);
-            });
+            messageProcessLimiter
+              .execute(() =>
+                executeInboundTaskWithSessionQueue({
+                  api,
+                  sessionId: inboundSessionId,
+                  isBot: false,
+                  task: () =>
+                    processInboundMessage({
+                      ...basePayload,
+                      mediaId: msgObj.MediaId,
+                      msgType: "image",
+                      picUrl: msgObj.PicUrl,
+                    }),
+                }),
+              )
+              .catch((err) => {
+                api.logger.error?.(`wecom: async image processing failed: ${err.message}`);
+              });
           } else if (msgType === "voice" && msgObj?.MediaId) {
-            messageProcessLimiter.execute(() =>
-              processInboundMessage({
-                ...basePayload,
-                mediaId: msgObj.MediaId,
-                msgType: "voice",
-                recognition: msgObj.Recognition,
-              })
-            ).catch((err) => {
-              api.logger.error?.(`wecom: async voice processing failed: ${err.message}`);
-            });
+            messageProcessLimiter
+              .execute(() =>
+                executeInboundTaskWithSessionQueue({
+                  api,
+                  sessionId: inboundSessionId,
+                  isBot: false,
+                  task: () =>
+                    processInboundMessage({
+                      ...basePayload,
+                      mediaId: msgObj.MediaId,
+                      msgType: "voice",
+                      recognition: msgObj.Recognition,
+                    }),
+                }),
+              )
+              .catch((err) => {
+                api.logger.error?.(`wecom: async voice processing failed: ${err.message}`);
+              });
           } else if (msgType === "video" && msgObj?.MediaId) {
-            messageProcessLimiter.execute(() =>
-              processInboundMessage({
-                ...basePayload,
-                mediaId: msgObj.MediaId,
-                msgType: "video",
-                thumbMediaId: msgObj.ThumbMediaId,
-              })
-            ).catch((err) => {
-              api.logger.error?.(`wecom: async video processing failed: ${err.message}`);
-            });
+            messageProcessLimiter
+              .execute(() =>
+                executeInboundTaskWithSessionQueue({
+                  api,
+                  sessionId: inboundSessionId,
+                  isBot: false,
+                  task: () =>
+                    processInboundMessage({
+                      ...basePayload,
+                      mediaId: msgObj.MediaId,
+                      msgType: "video",
+                      thumbMediaId: msgObj.ThumbMediaId,
+                    }),
+                }),
+              )
+              .catch((err) => {
+                api.logger.error?.(`wecom: async video processing failed: ${err.message}`);
+              });
           } else if (msgType === "file" && msgObj?.MediaId) {
-            messageProcessLimiter.execute(() =>
-              processInboundMessage({
-                ...basePayload,
-                mediaId: msgObj.MediaId,
-                msgType: "file",
-                fileName: msgObj.FileName,
-                fileSize: msgObj.FileSize,
-              })
-            ).catch((err) => {
-              api.logger.error?.(`wecom: async file processing failed: ${err.message}`);
-            });
+            messageProcessLimiter
+              .execute(() =>
+                executeInboundTaskWithSessionQueue({
+                  api,
+                  sessionId: inboundSessionId,
+                  isBot: false,
+                  task: () =>
+                    processInboundMessage({
+                      ...basePayload,
+                      mediaId: msgObj.MediaId,
+                      msgType: "file",
+                      fileName: msgObj.FileName,
+                      fileSize: msgObj.FileSize,
+                    }),
+                }),
+              )
+              .catch((err) => {
+                api.logger.error?.(`wecom: async file processing failed: ${err.message}`);
+              });
           } else if (msgType === "link") {
-            messageProcessLimiter.execute(() =>
-              processInboundMessage({
-                ...basePayload,
-                msgType: "link",
-                linkTitle: msgObj.Title,
-                linkDescription: msgObj.Description,
-                linkUrl: msgObj.Url,
-                linkPicUrl: msgObj.PicUrl,
-              })
-            ).catch((err) => {
-              api.logger.error?.(`wecom: async link processing failed: ${err.message}`);
-            });
+            messageProcessLimiter
+              .execute(() =>
+                executeInboundTaskWithSessionQueue({
+                  api,
+                  sessionId: inboundSessionId,
+                  isBot: false,
+                  task: () =>
+                    processInboundMessage({
+                      ...basePayload,
+                      msgType: "link",
+                      linkTitle: msgObj.Title,
+                      linkDescription: msgObj.Description,
+                      linkUrl: msgObj.Url,
+                      linkPicUrl: msgObj.PicUrl,
+                    }),
+                }),
+              )
+              .catch((err) => {
+                api.logger.error?.(`wecom: async link processing failed: ${err.message}`);
+              });
           } else {
             api.logger.info?.(`wecom: ignoring unsupported message type=${msgType}`);
           }
@@ -2487,6 +2808,9 @@ async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId,
   const groupPolicy = resolveWecomGroupChatPolicy(api);
   const debouncePolicy = resolveWecomTextDebouncePolicy(api);
   const streamingPolicy = resolveWecomReplyStreamingPolicy(api);
+  const deliveryFallbackPolicy = resolveWecomDeliveryFallbackPolicy(api);
+  const streamManagerPolicy = resolveWecomStreamManagerPolicy(api);
+  const webhookBotPolicy = resolveWecomWebhookBotDeliveryPolicy(api);
   const proxyEnabled = Boolean(config?.outboundProxy);
   const voiceStatusLine = voiceConfig.enabled
     ? `✅ 语音消息转写（本地 ${voiceConfig.provider}，模型: ${voiceConfig.modelPath || voiceConfig.model}）`
@@ -2509,6 +2833,15 @@ async function handleStatusCommand({ api, fromUser, corpId, corpSecret, agentId,
   const streamingPolicyLine = streamingPolicy.enabled
     ? `✅ Agent 增量回包已启用（最小片段 ${streamingPolicy.minChars} 字符 / 最短间隔 ${streamingPolicy.minIntervalMs}ms）`
     : "ℹ️ Agent 增量回包未启用";
+  const fallbackPolicyLine = deliveryFallbackPolicy.enabled
+    ? `✅ 回包兜底链路已启用（${deliveryFallbackPolicy.order.join(" > ")}）`
+    : "ℹ️ 回包兜底链路未启用（仅 active_stream）";
+  const streamManagerPolicyLine = streamManagerPolicy.enabled
+    ? `✅ 会话串行队列已启用（每会话并发 ${streamManagerPolicy.maxConcurrentPerSession}）`
+    : "ℹ️ 会话串行队列未启用";
+  const webhookBotPolicyLine = webhookBotPolicy.enabled
+    ? "✅ Webhook Bot 回包已启用"
+    : "ℹ️ Webhook Bot 回包未启用";
 
   const statusText = `📊 系统状态
 
@@ -2531,6 +2864,9 @@ ${allowFromPolicyLine}
 ${groupPolicyLine}
 ${debouncePolicyLine}
 ${streamingPolicyLine}
+${fallbackPolicyLine}
+${streamManagerPolicyLine}
+${webhookBotPolicyLine}
 ${proxyEnabled ? "✅ WeCom 出站代理已启用" : "ℹ️ WeCom 出站代理未启用"}
 ${voiceStatusLine}`;
 
@@ -2567,6 +2903,9 @@ function buildWecomBotStatusText(api, fromUser) {
   const allowFromPolicy = resolveWecomAllowFromPolicy(api, "default", {});
   const groupPolicy = resolveWecomGroupChatPolicy(api);
   const botConfig = resolveWecomBotConfig(api);
+  const deliveryFallbackPolicy = resolveWecomDeliveryFallbackPolicy(api);
+  const streamManagerPolicy = resolveWecomStreamManagerPolicy(api);
+  const webhookBotPolicy = resolveWecomWebhookBotDeliveryPolicy(api);
   const commandPolicyLine = commandPolicy.enabled
     ? `✅ 指令白名单已启用（${commandPolicy.allowlist.length} 条，管理员 ${commandPolicy.adminUsers.length} 人）`
     : "ℹ️ 指令白名单未启用";
@@ -2579,10 +2918,19 @@ function buildWecomBotStatusText(api, fromUser) {
       ? "✅ 群聊触发：仅 @ 命中后处理"
       : "✅ 群聊触发：无需 @（全部处理）"
     : "⚠️ 群聊处理未启用";
+  const fallbackPolicyLine = deliveryFallbackPolicy.enabled
+    ? `✅ 回包兜底链路已启用（${deliveryFallbackPolicy.order.join(" > ")}）`
+    : "ℹ️ 回包兜底链路未启用（仅 active_stream）";
+  const streamManagerPolicyLine = streamManagerPolicy.enabled
+    ? `✅ 会话串行队列已启用（每会话并发 ${streamManagerPolicy.maxConcurrentPerSession}）`
+    : "ℹ️ 会话串行队列未启用";
+  const webhookBotPolicyLine = webhookBotPolicy.enabled
+    ? "✅ Webhook Bot 回包已启用"
+    : "ℹ️ Webhook Bot 回包未启用";
   return `📊 系统状态
 
 渠道：企业微信 AI 机器人 (Bot)
-会话ID：wecom:${fromUser}
+会话ID：wecom-bot:${fromUser}
 插件版本：${PLUGIN_VERSION}
 Bot Webhook：${botConfig.webhookPath}
 
@@ -2590,7 +2938,10 @@ Bot Webhook：${botConfig.webhookPath}
 ✅ 原生流式回复（stream）
 ${commandPolicyLine}
 ${allowFromPolicyLine}
-${groupPolicyLine}`;
+${groupPolicyLine}
+${fallbackPolicyLine}
+${streamManagerPolicyLine}
+${webhookBotPolicyLine}`;
 }
 
 async function processBotInboundMessage({
@@ -2603,16 +2954,18 @@ async function processBotInboundMessage({
   chatId,
   isGroupChat = false,
   imageUrls = [],
+  responseUrl = "",
 }) {
   const runtime = api.runtime;
   const cfg = api.config;
-  const sessionId = buildWecomSessionId(fromUser);
-  const fromAddress = `wecom:${fromUser}`;
+  const sessionId = buildWecomBotSessionId(fromUser);
+  const fromAddress = `wecom-bot:${fromUser}`;
   const normalizedFromUser = String(fromUser ?? "").trim().toLowerCase();
   const originalContent = String(content ?? "");
   let commandBody = originalContent;
   const dispatchStartedAt = Date.now();
   const tempPathsToCleanup = [];
+  const botModeConfig = resolveWecomBotConfig(api);
   const botProxyUrl = resolveWecomBotProxyConfig(api);
   const normalizedImageUrls = Array.from(
     new Set(
@@ -2623,9 +2976,27 @@ async function processBotInboundMessage({
   );
 
   const safeFinishStream = (text) => {
-    if (!BOT_STREAMS.has(streamId)) return;
+    if (!hasBotStream(streamId)) return;
     finishBotStream(streamId, String(text ?? ""));
   };
+  const safeDeliverReply = async (text, reason = "reply") => {
+    const contentText = String(text ?? "").trim();
+    if (!contentText) return false;
+    const result = await deliverBotReplyText({
+      api,
+      fromUser,
+      sessionId,
+      streamId,
+      responseUrl,
+      text: contentText,
+      reason,
+    });
+    if (!result?.ok && hasBotStream(streamId)) {
+      finishBotStream(streamId, contentText);
+    }
+    return result?.ok === true;
+  };
+  let startLateReplyWatcher = () => false;
 
   try {
     if (isGroupChat && msgType === "text") {
@@ -2684,7 +3055,6 @@ async function processBotInboundMessage({
       const fetchedImagePaths = [];
       const imageUrlsToFetch = normalizedImageUrls.slice(0, 3);
       const tempDir = join(tmpdir(), WECOM_TEMP_DIR_NAME);
-      const botModeConfig = resolveWecomBotConfig(api);
       await mkdir(tempDir, { recursive: true });
       for (const imageUrl of imageUrlsToFetch) {
         try {
@@ -2830,10 +3200,10 @@ async function processBotInboundMessage({
 
     let blockText = "";
     let streamFinished = false;
-    const replyTimeoutMs = Math.max(
-      15000,
-      asNumber(cfg?.env?.vars?.WECOM_REPLY_TIMEOUT_MS ?? requireEnv("WECOM_REPLY_TIMEOUT_MS"), 90000),
-    );
+    let lateReplyWatcherPromise = null;
+    const replyTimeoutMs = Math.max(15000, Number(botModeConfig?.replyTimeoutMs) || 90000);
+    const lateReplyWatchMs = Math.max(30000, Number(botModeConfig?.lateReplyWatchMs) || 180000);
+    const lateReplyPollMs = Math.max(500, Number(botModeConfig?.lateReplyPollMs) || 2000);
     const tryFinishFromTranscript = async (minTimestamp = dispatchStartedAt) => {
       try {
         const transcriptPath = await resolveSessionTranscriptFilePath({
@@ -2849,13 +3219,16 @@ async function processBotInboundMessage({
         for (const line of lines) {
           const parsedReply = parseLateAssistantReplyFromTranscriptLine(line, minTimestamp);
           if (!parsedReply) continue;
+          if (hasTranscriptReplyBeenDelivered(sessionId, parsedReply.transcriptMessageId)) continue;
           latestReply = parsedReply;
         }
         if (!latestReply?.text) return false;
         const transcriptText = markdownToWecomText(latestReply.text).trim();
         if (!transcriptText) return false;
-        safeFinishStream(transcriptText);
-        streamFinished = true;
+        streamFinished = await safeDeliverReply(transcriptText, "transcript-fallback");
+        if (streamFinished) {
+          markTranscriptReplyDelivered(sessionId, latestReply.transcriptMessageId);
+        }
         api.logger.info?.(
           `wecom(bot): filled reply from transcript session=${sessionId} messageId=${latestReply.transcriptMessageId}`,
         );
@@ -2864,6 +3237,50 @@ async function processBotInboundMessage({
         api.logger.warn?.(`wecom(bot): transcript fallback failed: ${String(err?.message || err)}`);
         return false;
       }
+    };
+    startLateReplyWatcher = (reason = "dispatch-timeout", minTimestamp = dispatchStartedAt) => {
+      if (streamFinished || lateReplyWatcherPromise) return false;
+      const watchStartedAt = Date.now();
+      const watchId = `wecom-bot:${sessionId}:${msgId || watchStartedAt}:${Math.random().toString(36).slice(2, 8)}`;
+      ACTIVE_LATE_REPLY_WATCHERS.set(watchId, {
+        sessionId,
+        sessionKey: sessionId,
+        accountId: "bot",
+        startedAt: watchStartedAt,
+        reason,
+      });
+      lateReplyWatcherPromise = (async () => {
+        try {
+          api.logger.info?.(
+            `wecom(bot): late reply watcher started session=${sessionId} reason=${reason} timeoutMs=${lateReplyWatchMs}`,
+          );
+          const deadline = watchStartedAt + lateReplyWatchMs;
+          while (Date.now() < deadline) {
+            if (streamFinished) return;
+            const delivered = await tryFinishFromTranscript(minTimestamp);
+            if (delivered || streamFinished) return;
+            await sleep(lateReplyPollMs);
+          }
+          if (!streamFinished) {
+            api.logger.warn?.(
+              `wecom(bot): late reply watcher timed out session=${sessionId} timeoutMs=${lateReplyWatchMs}`,
+            );
+            await safeDeliverReply("抱歉，当前模型请求超时或网络不稳定，请稍后重试。", "late-timeout-fallback");
+          }
+        } catch (watchErr) {
+          api.logger.warn?.(`wecom(bot): late reply watcher failed: ${String(watchErr?.message || watchErr)}`);
+          if (!streamFinished) {
+            await safeDeliverReply(
+              `抱歉，当前模型请求超时或网络不稳定，请稍后重试。\n故障信息: ${String(watchErr?.message || watchErr).slice(0, 160)}`,
+              "late-watcher-error",
+            );
+          }
+        } finally {
+          ACTIVE_LATE_REPLY_WATCHERS.delete(watchId);
+          lateReplyWatcherPromise = null;
+        }
+      })();
+      return true;
     };
 
     await withTimeout(
@@ -2875,7 +3292,7 @@ async function processBotInboundMessage({
         },
         dispatcherOptions: {
           deliver: async (payload, info) => {
-            if (!BOT_STREAMS.has(streamId)) return;
+            if (!hasBotStream(streamId)) return;
             if (info.kind === "block") {
               if (!payload?.text) return;
               const incomingBlock = String(payload.text);
@@ -2890,27 +3307,29 @@ async function processBotInboundMessage({
             if (info.kind !== "final") return;
             if (payload?.text) {
               if (isAgentFailureText(payload.text)) {
-                safeFinishStream(`抱歉，请求失败：${payload.text}`);
-                streamFinished = true;
+                streamFinished = await safeDeliverReply(`抱歉，请求失败：${payload.text}`, "upstream-failure");
                 return;
               }
               const finalText = markdownToWecomText(payload.text).trim();
               if (finalText) {
-                safeFinishStream(finalText);
-                streamFinished = true;
+                streamFinished = await safeDeliverReply(finalText, "final");
                 return;
               }
             }
             if (payload?.mediaUrl || (payload?.mediaUrls?.length ?? 0) > 0) {
-              safeFinishStream("已收到模型返回的媒体结果，但 Bot 流式模式暂不支持直接回传该媒体。");
-              streamFinished = true;
+              streamFinished = await safeDeliverReply(
+                "已收到模型返回的媒体结果，但 Bot 流式模式暂不支持直接回传该媒体。",
+                "final-media-not-supported",
+              );
               return;
             }
           },
           onError: async (err, info) => {
             api.logger.error?.(`wecom(bot): ${info.kind} reply failed: ${String(err)}`);
-            safeFinishStream(`抱歉，当前模型请求失败，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`);
-            streamFinished = true;
+            streamFinished = await safeDeliverReply(
+              `抱歉，当前模型请求失败，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`,
+              `dispatch-${info.kind}-error`,
+            );
           },
         },
       }),
@@ -2923,20 +3342,32 @@ async function processBotInboundMessage({
       if (filledFromTranscript) return;
       const fallback = markdownToWecomText(blockText).trim();
       if (fallback) {
-        safeFinishStream(fallback);
+        await safeDeliverReply(fallback, "block-fallback");
       } else {
+        const watcherStarted = startLateReplyWatcher("dispatch-finished-without-final", dispatchStartedAt);
+        if (watcherStarted) return;
         api.logger.warn?.(
-          `wecom(bot): dispatch finished without deliverable content; fallback to timeout text session=${sessionId}`,
+          `wecom(bot): dispatch finished without deliverable content; late watcher unavailable, fallback to timeout text session=${sessionId}`,
         );
-        safeFinishStream("抱歉，当前模型请求超时或网络不稳定，请稍后重试。");
+        await safeDeliverReply("抱歉，当前模型请求超时或网络不稳定，请稍后重试。", "timeout-fallback");
       }
     }
   } catch (err) {
     api.logger.warn?.(`wecom(bot): processing failed: ${String(err?.message || err)}`);
+    if (isDispatchTimeoutError(err)) {
+      const watcherStarted = (() => {
+        try {
+          return startLateReplyWatcher("dispatch-timeout", dispatchStartedAt);
+        } catch {
+          return false;
+        }
+      })();
+      if (watcherStarted) return;
+    }
     try {
       const fallbackFromTranscript = await (async () => {
         try {
-          const runtimeSessionId = buildWecomSessionId(fromUser);
+          const runtimeSessionId = buildWecomBotSessionId(fromUser);
           const runtimeStorePath = runtime.channel.session.resolveStorePath(cfg.session?.store, {
             agentId: runtime.channel.routing.resolveAgentRoute({
               cfg,
@@ -2958,22 +3389,29 @@ async function processBotInboundMessage({
           for (const line of lines) {
             const parsedReply = parseLateAssistantReplyFromTranscriptLine(line, dispatchStartedAt);
             if (!parsedReply) continue;
+            if (hasTranscriptReplyBeenDelivered(runtimeSessionId, parsedReply.transcriptMessageId)) continue;
             latestReply = parsedReply;
           }
           const text = latestReply?.text ? markdownToWecomText(latestReply.text).trim() : "";
+          if (text && latestReply?.transcriptMessageId) {
+            markTranscriptReplyDelivered(runtimeSessionId, latestReply.transcriptMessageId);
+          }
           return text || "";
         } catch {
           return "";
         }
       })();
       if (fallbackFromTranscript) {
-        safeFinishStream(fallbackFromTranscript);
+        await safeDeliverReply(fallbackFromTranscript, "catch-transcript-fallback");
         return;
       }
     } catch {
       // ignore transcript fallback errors in catch block
     }
-    safeFinishStream(`抱歉，当前模型请求超时或网络不稳定，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`);
+    await safeDeliverReply(
+      `抱歉，当前模型请求超时或网络不稳定，请稍后重试。\n故障信息: ${String(err?.message || err).slice(0, 160)}`,
+      "catch-timeout-fallback",
+    );
   } finally {
     for (const filePath of tempPathsToCleanup) {
       scheduleTempFileCleanup(filePath, api.logger);

@@ -240,12 +240,19 @@ openclaw gateway restart
 openclaw gateway status
 openclaw plugins list
 npm run wecom:selfcheck -- --all-accounts
+npm run wecom:bot:selfcheck
 ```
 
 `wecom:selfcheck` 帮助：
 
 ```bash
 node ./scripts/wecom-selfcheck.mjs --help
+```
+
+`wecom:bot:selfcheck` 帮助：
+
+```bash
+node ./scripts/wecom-bot-selfcheck.mjs --help
 ```
 
 ## 配置参考
@@ -274,6 +281,9 @@ node ./scripts/wecom-selfcheck.mjs --help
 | `webhookPath` | string | `/wecom/bot/callback` | Bot 回调路径 |
 | `placeholderText` | string | `消息已收到...` | stream 初始占位文案（可设为空字符串） |
 | `streamExpireMs` | integer | `600000` | stream 状态保留时间（30s~1h） |
+| `replyTimeoutMs` | integer | `90000` | Bot 等待模型回包超时（15s~10m） |
+| `lateReplyWatchMs` | integer | `180000` | Bot 超时后异步补发观察窗口（30s~10m） |
+| `lateReplyPollMs` | integer | `2000` | Bot 异步补发轮询间隔（500ms~10s） |
 
 ### 授权与指令策略
 
@@ -407,6 +417,9 @@ node ./scripts/wecom-selfcheck.mjs --help
 | `WECOM_BOT_WEBHOOK_PATH` | 否 | Bot 回调路径 |
 | `WECOM_BOT_PLACEHOLDER_TEXT` | 否 | stream 占位文案 |
 | `WECOM_BOT_STREAM_EXPIRE_MS` | 否 | stream 保留时长 |
+| `WECOM_BOT_REPLY_TIMEOUT_MS` | 否 | Bot 等待模型回包超时 |
+| `WECOM_BOT_LATE_REPLY_WATCH_MS` | 否 | Bot 超时后补发观察窗口 |
+| `WECOM_BOT_LATE_REPLY_POLL_MS` | 否 | Bot 补发轮询间隔 |
 
 ### 策略与流控
 
@@ -464,6 +477,7 @@ openclaw gateway status
 openclaw status --deep
 openclaw logs --follow
 npm run wecom:selfcheck -- --all-accounts
+npm run wecom:bot:selfcheck
 ```
 
 ## 开发与发布
@@ -474,7 +488,9 @@ npm run wecom:selfcheck -- --all-accounts
 |---|---|
 | `npm test` | 语法与单测 |
 | `npm run wecom:selfcheck -- --all-accounts` | 配置+网络体检 |
-| `npm run wecom:smoke` | 升级后快速回归 |
+| `npm run wecom:bot:selfcheck` | Bot 端到端链路体检（签名/加密/stream-refresh） |
+| `npm run wecom:smoke` | 升级后快速回归（Agent 主链路） |
+| `npm run wecom:smoke -- --with-bot-e2e` | 升级后快速回归（含 Bot E2E） |
 | `openclaw gateway restart` | 重启网关 |
 
 ### 发版建议流程

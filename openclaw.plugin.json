@@ -93,6 +93,141 @@
             "maximum": 3600000,
             "default": 600000,
             "description": "Bot 流式会话保留时长（毫秒）"
+          },
+          "replyTimeoutMs": {
+            "type": "integer",
+            "minimum": 15000,
+            "maximum": 600000,
+            "default": 90000,
+            "description": "Bot 模式等待模型回包超时（毫秒）"
+          },
+          "lateReplyWatchMs": {
+            "type": "integer",
+            "minimum": 30000,
+            "maximum": 600000,
+            "default": 180000,
+            "description": "Bot 超时后异步补发观察窗口（毫秒）"
+          },
+          "lateReplyPollMs": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 10000,
+            "default": 2000,
+            "description": "Bot 异步补发轮询间隔（毫秒）"
+          }
+        }
+      },
+      "delivery": {
+        "type": "object",
+        "description": "Bot 模式回包兜底策略（按层降级）",
+        "additionalProperties": false,
+        "properties": {
+          "fallback": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "是否启用多层回包兜底（默认关闭，保持兼容）"
+              },
+              "order": {
+                "type": "array",
+                "description": "回包层级顺序（active_stream/response_url/webhook_bot/agent_push）",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "active_stream",
+                    "response_url",
+                    "webhook_bot",
+                    "agent_push"
+                  ]
+                },
+                "default": [
+                  "active_stream",
+                  "response_url",
+                  "webhook_bot",
+                  "agent_push"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "webhookBot": {
+        "type": "object",
+        "description": "Webhook Bot 出站回包配置（fallback layer）",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "是否启用 Webhook Bot 出站回包"
+          },
+          "url": {
+            "type": "string",
+            "description": "Webhook Bot 完整 URL（含 key）"
+          },
+          "key": {
+            "type": "string",
+            "description": "Webhook Bot key（与 url 二选一）",
+            "x-sensitive": true
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 60000,
+            "default": 8000,
+            "description": "Webhook Bot 请求超时（毫秒）"
+          }
+        }
+      },
+      "stream": {
+        "type": "object",
+        "description": "会话级流管理与并发控制（默认关闭）",
+        "additionalProperties": false,
+        "properties": {
+          "manager": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "是否启用会话队列（每个会话串行处理）"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 600000,
+                "default": 45000,
+                "description": "会话流状态保留/等待超时（毫秒）"
+              },
+              "maxConcurrentPerSession": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8,
+                "default": 1,
+                "description": "每个会话允许并发处理的任务数"
+              }
+            }
+          }
+        }
+      },
+      "observability": {
+        "type": "object",
+        "description": "链路可观测性配置",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否输出回包链路日志"
+          },
+          "logPayloadMeta": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否输出回包元信息（trace、层级、状态）"
           }
         }
       },
@@ -389,6 +524,9 @@
       "sensitive": true
     },
     "bot.encodingAesKey": {
+      "sensitive": true
+    },
+    "webhookBot.key": {
       "sensitive": true
     },
     "voiceTranscription.apiKey": {

@@ -41,6 +41,13 @@ const DEFAULT_COMMAND_ALLOWLIST = Object.freeze([
   "/compact",
 ]);
 const DEFAULT_ALLOW_FROM_REJECT_MESSAGE = "当前账号未授权，请联系管理员。";
+const DEFAULT_DELIVERY_FALLBACK_ORDER = Object.freeze([
+  "active_stream",
+  "response_url",
+  "webhook_bot",
+  "agent_push",
+]);
+const DELIVERY_FALLBACK_LAYER_SET = new Set(DEFAULT_DELIVERY_FALLBACK_ORDER);
 
 const inboundMessageDedupe = new Map();
 
@@ -301,6 +308,39 @@ function uniqueCommandList(values) {
   return Array.from(deduped);
 }
 
+function normalizeDeliveryLayerToken(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, "_");
+  if (!normalized) return "";
+  if (normalized === "active" || normalized === "stream" || normalized === "active_stream") {
+    return "active_stream";
+  }
+  if (normalized === "responseurl" || normalized === "response_url") {
+    return "response_url";
+  }
+  if (normalized === "webhook" || normalized === "webhookbot" || normalized === "webhook_bot") {
+    return "webhook_bot";
+  }
+  if (normalized === "agent" || normalized === "agentpush" || normalized === "agent_push") {
+    return "agent_push";
+  }
+  return normalized;
+}
+
+function uniqueDeliveryFallbackOrder(values) {
+  const deduped = [];
+  const seen = new Set();
+  for (const value of values) {
+    const normalized = normalizeDeliveryLayerToken(value);
+    if (!normalized || !DELIVERY_FALLBACK_LAYER_SET.has(normalized) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+  return deduped;
+}
+
 export function normalizeWecomAllowFromEntry(raw) {
   const trimmed = String(raw ?? "").trim();
   if (!trimmed) return "";
@@ -556,6 +596,136 @@ export function resolveWecomStreamingConfig({
   };
 }
 
+export function resolveWecomDeliveryFallbackConfig({
+  channelConfig = {},
+  envVars = {},
+  processEnv = process.env,
+} = {}) {
+  const deliveryConfig =
+    channelConfig?.delivery && typeof channelConfig.delivery === "object" ? channelConfig.delivery : {};
+  const fallbackConfig =
+    deliveryConfig?.fallback && typeof deliveryConfig.fallback === "object" ? deliveryConfig.fallback : {};
+  const enabled = parseBooleanLike(
+    fallbackConfig.enabled,
+    parseBooleanLike(
+      envVars?.WECOM_DELIVERY_FALLBACK_ENABLED,
+      parseBooleanLike(processEnv?.WECOM_DELIVERY_FALLBACK_ENABLED, false),
+    ),
+  );
+  const order = uniqueDeliveryFallbackOrder(
+    parseStringList(
+      fallbackConfig.order,
+      envVars?.WECOM_DELIVERY_FALLBACK_ORDER,
+      processEnv?.WECOM_DELIVERY_FALLBACK_ORDER,
+    ),
+  );
+  return {
+    enabled,
+    order: order.length > 0 ? order : Array.from(DEFAULT_DELIVERY_FALLBACK_ORDER),
+  };
+}
+
+export function resolveWecomWebhookBotDeliveryConfig({
+  channelConfig = {},
+  envVars = {},
+  processEnv = process.env,
+} = {}) {
+  const webhookBotConfig =
+    channelConfig?.webhookBot && typeof channelConfig.webhookBot === "object" ? channelConfig.webhookBot : {};
+  const enabled = parseBooleanLike(
+    webhookBotConfig.enabled,
+    parseBooleanLike(envVars?.WECOM_WEBHOOK_BOT_ENABLED, parseBooleanLike(processEnv?.WECOM_WEBHOOK_BOT_ENABLED, false)),
+  );
+  const url = pickFirstNonEmptyString(
+    webhookBotConfig.url,
+    envVars?.WECOM_WEBHOOK_BOT_URL,
+    processEnv?.WECOM_WEBHOOK_BOT_URL,
+  );
+  const key = pickFirstNonEmptyString(
+    webhookBotConfig.key,
+    envVars?.WECOM_WEBHOOK_BOT_KEY,
+    processEnv?.WECOM_WEBHOOK_BOT_KEY,
+  );
+  const timeoutMs = asBoundedPositiveInteger(
+    webhookBotConfig.timeoutMs ??
+      envVars?.WECOM_WEBHOOK_BOT_TIMEOUT_MS ??
+      processEnv?.WECOM_WEBHOOK_BOT_TIMEOUT_MS,
+    8000,
+    1000,
+    60000,
+  );
+  return {
+    enabled,
+    url: url || undefined,
+    key: key || undefined,
+    timeoutMs,
+  };
+}
+
+export function resolveWecomStreamManagerConfig({
+  channelConfig = {},
+  envVars = {},
+  processEnv = process.env,
+} = {}) {
+  const streamConfig = channelConfig?.stream && typeof channelConfig.stream === "object" ? channelConfig.stream : {};
+  const managerConfig =
+    streamConfig?.manager && typeof streamConfig.manager === "object" ? streamConfig.manager : {};
+  const enabled = parseBooleanLike(
+    managerConfig.enabled,
+    parseBooleanLike(
+      envVars?.WECOM_STREAM_MANAGER_ENABLED,
+      parseBooleanLike(processEnv?.WECOM_STREAM_MANAGER_ENABLED, false),
+    ),
+  );
+  const timeoutMs = asBoundedPositiveInteger(
+    managerConfig.timeoutMs ??
+      envVars?.WECOM_STREAM_MANAGER_TIMEOUT_MS ??
+      processEnv?.WECOM_STREAM_MANAGER_TIMEOUT_MS,
+    45000,
+    1000,
+    10 * 60 * 1000,
+  );
+  const maxConcurrentPerSession = asBoundedPositiveInteger(
+    managerConfig.maxConcurrentPerSession ??
+      envVars?.WECOM_STREAM_MANAGER_MAX_CONCURRENT_PER_SESSION ??
+      processEnv?.WECOM_STREAM_MANAGER_MAX_CONCURRENT_PER_SESSION,
+    1,
+    1,
+    8,
+  );
+  return {
+    enabled,
+    timeoutMs,
+    maxConcurrentPerSession,
+  };
+}
+
+export function resolveWecomObservabilityConfig({
+  channelConfig = {},
+  envVars = {},
+  processEnv = process.env,
+} = {}) {
+  const observabilityConfig =
+    channelConfig?.observability && typeof channelConfig.observability === "object"
+      ? channelConfig.observability
+      : {};
+  const enabled = parseBooleanLike(
+    observabilityConfig.enabled,
+    parseBooleanLike(envVars?.WECOM_OBSERVABILITY_ENABLED, parseBooleanLike(processEnv?.WECOM_OBSERVABILITY_ENABLED, true)),
+  );
+  const logPayloadMeta = parseBooleanLike(
+    observabilityConfig.logPayloadMeta,
+    parseBooleanLike(
+      envVars?.WECOM_OBSERVABILITY_PAYLOAD_META,
+      parseBooleanLike(processEnv?.WECOM_OBSERVABILITY_PAYLOAD_META, true),
+    ),
+  );
+  return {
+    enabled,
+    logPayloadMeta,
+  };
+}
+
 export function resolveWecomBotModeConfig({
   channelConfig = {},
   envVars = {},
@@ -598,6 +768,36 @@ export function resolveWecomBotModeConfig({
     30 * 1000,
     60 * 60 * 1000,
   );
+  const replyTimeoutMs = asBoundedPositiveInteger(
+    botConfig.replyTimeoutMs ??
+      envVars?.WECOM_BOT_REPLY_TIMEOUT_MS ??
+      processEnv?.WECOM_BOT_REPLY_TIMEOUT_MS ??
+      envVars?.WECOM_REPLY_TIMEOUT_MS ??
+      processEnv?.WECOM_REPLY_TIMEOUT_MS,
+    90000,
+    15000,
+    10 * 60 * 1000,
+  );
+  const lateReplyWatchMs = asBoundedPositiveInteger(
+    botConfig.lateReplyWatchMs ??
+      envVars?.WECOM_BOT_LATE_REPLY_WATCH_MS ??
+      processEnv?.WECOM_BOT_LATE_REPLY_WATCH_MS ??
+      envVars?.WECOM_LATE_REPLY_WATCH_MS ??
+      processEnv?.WECOM_LATE_REPLY_WATCH_MS,
+    180000,
+    30000,
+    10 * 60 * 1000,
+  );
+  const lateReplyPollMs = asBoundedPositiveInteger(
+    botConfig.lateReplyPollMs ??
+      envVars?.WECOM_BOT_LATE_REPLY_POLL_MS ??
+      processEnv?.WECOM_BOT_LATE_REPLY_POLL_MS ??
+      envVars?.WECOM_LATE_REPLY_POLL_MS ??
+      processEnv?.WECOM_LATE_REPLY_POLL_MS,
+    2000,
+    500,
+    10000,
+  );
 
   return {
     enabled,
@@ -606,6 +806,9 @@ export function resolveWecomBotModeConfig({
     webhookPath: webhookPath || "/wecom/bot/callback",
     placeholderText,
     streamExpireMs,
+    replyTimeoutMs,
+    lateReplyWatchMs,
+    lateReplyPollMs,
   };
 }
 

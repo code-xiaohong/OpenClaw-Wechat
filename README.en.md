@@ -92,6 +92,7 @@ Add to `~/.openclaw/openclaw.json`:
 openclaw gateway restart
 openclaw gateway status
 npm run wecom:selfcheck -- --all-accounts
+npm run wecom:bot:selfcheck
 ```
 
 ## Requirements
@@ -149,6 +150,9 @@ openclaw plugins install @dingxiang-me/openclaw-wechat
 | `webhookPath` | string | `/wecom/bot/callback` | Bot callback path |
 | `placeholderText` | string | processing text | stream initial placeholder |
 | `streamExpireMs` | integer | `600000` | 30s ~ 1h |
+| `replyTimeoutMs` | integer | `90000` | Bot reply timeout (15s ~ 10m) |
+| `lateReplyWatchMs` | integer | `180000` | async late-reply watch window |
+| `lateReplyPollMs` | integer | `2000` | async late-reply poll interval |
 
 ### Policy config
 
@@ -217,6 +221,9 @@ Session key policy: default is one-user-one-session (`wecom:<userid>`).
 | `WECOM_BOT_WEBHOOK_PATH` | Bot callback path |
 | `WECOM_BOT_PLACEHOLDER_TEXT` | stream placeholder text |
 | `WECOM_BOT_STREAM_EXPIRE_MS` | stream cache TTL |
+| `WECOM_BOT_REPLY_TIMEOUT_MS` | Bot reply timeout |
+| `WECOM_BOT_LATE_REPLY_WATCH_MS` | Bot late-reply watch window |
+| `WECOM_BOT_LATE_REPLY_POLL_MS` | Bot late-reply poll interval |
 
 ### Stability and policy
 
@@ -263,6 +270,7 @@ openclaw gateway status
 openclaw status --deep
 openclaw logs --follow
 npm run wecom:selfcheck -- --all-accounts
+npm run wecom:bot:selfcheck
 ```
 
 ## Development
@@ -271,7 +279,9 @@ npm run wecom:selfcheck -- --all-accounts
 |---|---|
 | `npm test` | syntax + tests |
 | `npm run wecom:selfcheck -- --all-accounts` | config/network self-check |
-| `npm run wecom:smoke` | smoke test after upgrades |
+| `npm run wecom:bot:selfcheck` | Bot E2E self-check (signature/encryption/stream-refresh) |
+| `npm run wecom:smoke` | smoke test after upgrades (Agent path) |
+| `npm run wecom:smoke -- --with-bot-e2e` | smoke test after upgrades (with Bot E2E) |
 | `openclaw gateway restart` | restart runtime |
 
 ## FAQ
@@ -284,4 +294,3 @@ WeCom image URLs can return non-standard content type or encrypted media stream.
 
 ### Can Telegram and WeCom affect each other?
 They are logically independent, but can conflict via shared webhook paths, multi-process gateway races, or loose plugin loading policy.
-

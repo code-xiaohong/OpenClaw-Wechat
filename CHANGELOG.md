@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- 新增 Bot 端到端自检脚本：`npm run wecom:bot:selfcheck`
+- 自检覆盖 Bot 回调全链路：`GET 健康探针`、`POST 签名+加密消息`、`stream-refresh` 轮询回包
+- `wecom:smoke` 新增可选开关：`--with-bot-e2e`（回归时可一并跑 Bot E2E）
+
+### Changed
+- Bot 模式新增独立超时参数：`channels.wecom.bot.replyTimeoutMs` / `WECOM_BOT_REPLY_TIMEOUT_MS`
+- 文档补充 Bot 自检与超时参数说明（中英文 README + 渠道文档）
+
+### Fixed
+- 移除遗留 `clawdbot.plugin.json`，避免旧架构文件干扰 OpenClaw 原生插件加载
+
 ## [0.4.9] - 2026-03-02
 
 ### Added

@@ -13,6 +13,9 @@ This channel integrates OpenClaw with WeCom (企业微信) internal apps.
 - Outbound: text and image
 - Multi-account: supported (`channels.wecom.accounts`)
 - Voice recognition: WeCom `Recognition` first; local whisper fallback supported (`channels.wecom.voiceTranscription`)
+- P0 delivery fallback chain: optional (`active_stream -> response_url -> webhook_bot -> agent_push`)
+- Session queue / stream manager: optional (`channels.wecom.stream.manager`)
+- Bot timeout tuning: supported (`channels.wecom.bot.replyTimeoutMs`, `lateReplyWatchMs`, `lateReplyPollMs`)
 
 ## Callback URL
 
@@ -34,10 +37,22 @@ All accounts:
 npm run wecom:selfcheck -- --all-accounts
 ```
 
+Bot E2E (signed/encrypted callback + stream refresh):
+
+```bash
+npm run wecom:bot:selfcheck
+```
+
 Upgrade smoke check:
 
 ```bash
 npm run wecom:smoke
+```
+
+Upgrade smoke check (with Bot E2E):
+
+```bash
+npm run wecom:smoke -- --with-bot-e2e
 ```
 
 ## Coexistence (Telegram/Feishu)
@@ -52,6 +67,42 @@ Optional:
 - `--skip-network`
 - `--skip-local-webhook`
 - `--json`
+
+## P0 Reliability Config (Optional)
+
+All new switches are default-off for compatibility.
+
+```json
+{
+  "channels": {
+    "wecom": {
+      "delivery": {
+        "fallback": {
+          "enabled": true,
+          "order": ["active_stream", "response_url", "webhook_bot", "agent_push"]
+        }
+      },
+      "webhookBot": {
+        "enabled": false,
+        "url": "",
+        "key": "",
+        "timeoutMs": 8000
+      },
+      "stream": {
+        "manager": {
+          "enabled": false,
+          "timeoutMs": 45000,
+          "maxConcurrentPerSession": 1
+        }
+      },
+      "observability": {
+        "enabled": true,
+        "logPayloadMeta": true
+      }
+    }
+  }
+}
+```
 
 ## Security
 
