@@ -289,6 +289,56 @@ test("resolveWecomTarget parses webhook and heuristics", () => {
   assert.equal(core.resolveWecomTarget(""), null);
 });
 
+test("normalizeWecomWebhookTargetMap parses object and env strings", () => {
+  const fromObject = core.normalizeWecomWebhookTargetMap({
+    Ops: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=ops",
+    Dev: "key:dev-key",
+  });
+  assert.deepEqual(fromObject, {
+    ops: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=ops",
+    dev: "key:dev-key",
+  });
+
+  const fromEnv = core.normalizeWecomWebhookTargetMap("ops=key:111;dev=https://example.com/hook?key=xyz");
+  assert.deepEqual(fromEnv, {
+    ops: "key:111",
+    dev: "https://example.com/hook?key=xyz",
+  });
+
+  const merged = core.normalizeWecomWebhookTargetMap(fromObject, "ops=key:override");
+  assert.equal(merged.ops, "key:override");
+  assert.equal(merged.dev, "key:dev-key");
+});
+
+test("resolveWecomWebhookTargetConfig resolves named webhook target", () => {
+  const map = core.normalizeWecomWebhookTargetMap({
+    ops: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=ops",
+    dev: "key:dev-key",
+    ci: "dev",
+  });
+
+  assert.deepEqual(core.resolveWecomWebhookTargetConfig("ops", map), {
+    url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=ops",
+  });
+  assert.deepEqual(core.resolveWecomWebhookTargetConfig("dev", map), {
+    key: "dev-key",
+  });
+  assert.deepEqual(core.resolveWecomWebhookTargetConfig("ci", map), {
+    key: "dev-key",
+  });
+  assert.deepEqual(core.resolveWecomWebhookTargetConfig("key:plain-key", map), {
+    key: "plain-key",
+  });
+  assert.deepEqual(
+    core.resolveWecomWebhookTargetConfig("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=direct", map),
+    { url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=direct" },
+  );
+  assert.equal(
+    core.resolveWecomWebhookTargetConfig("a", { a: "b", b: "a" }),
+    null,
+  );
+});
+
 test("resolveWecomDebounceConfig applies bounds and defaults", () => {
   const debounce = core.resolveWecomDebounceConfig({
     channelConfig: {

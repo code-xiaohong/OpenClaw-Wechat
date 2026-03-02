@@ -138,6 +138,7 @@ openclaw plugins install @dingxiang-me/openclaw-wechat
 | `callbackAesKey` | string | - | sensitive |
 | `webhookPath` | string | `/wecom/callback` | Agent callback path |
 | `outboundProxy` | string | - | WeCom API proxy |
+| `webhooks` | object | - | named webhook target map (`{ "ops": "https://...key=xxx" }`) |
 | `accounts` | object | - | multi-account map |
 
 ### Bot config (`channels.wecom.bot`)
@@ -211,6 +212,7 @@ Outbound target formats:
 - `party`: `party:2` / `dept:2`
 - `tag`: `tag:ops`
 - `webhook`: `webhook:https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx` or `webhook:key:xxx`
+- `webhook(named)`: `webhook:ops` (resolved from `channels.wecom.webhooks.ops` or `accounts.<id>.webhooks.ops`)
 
 ## Environment Variables
 
@@ -221,6 +223,7 @@ Outbound target formats:
 | `WECOM_CORP_ID`, `WECOM_CORP_SECRET`, `WECOM_AGENT_ID` | Agent app credentials |
 | `WECOM_CALLBACK_TOKEN`, `WECOM_CALLBACK_AES_KEY` | Agent callback security |
 | `WECOM_WEBHOOK_PATH` | Agent callback path |
+| `WECOM_WEBHOOK_TARGETS` | named webhook targets (`name=url`, separated by `,`/`;`) |
 
 ### Bot
 

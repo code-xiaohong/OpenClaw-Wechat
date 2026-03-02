@@ -399,6 +399,87 @@ export function normalizeWecomAllowFromEntry(raw) {
     .toLowerCase();
 }
 
+export function normalizeWecomWebhookTargetAlias(raw) {
+  return String(raw ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+export function normalizeWecomWebhookTargetMap(...values) {
+  const out = {};
+  const assignEntry = (rawAlias, rawTarget) => {
+    const alias = normalizeWecomWebhookTargetAlias(rawAlias);
+    const target = String(rawTarget ?? "").trim();
+    if (!alias || !target) return;
+    out[alias] = target;
+  };
+
+  for (const value of values) {
+    if (!value) continue;
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            for (const [rawAlias, rawTarget] of Object.entries(parsed)) {
+              assignEntry(rawAlias, rawTarget);
+            }
+            continue;
+          }
+        } catch {
+          // fall through to key=value parser
+        }
+      }
+      for (const token of trimmed.split(/[,\n;]/)) {
+        const pair = String(token ?? "").trim();
+        if (!pair) continue;
+        const eqIndex = pair.indexOf("=");
+        if (eqIndex <= 0 || eqIndex >= pair.length - 1) continue;
+        const alias = pair.slice(0, eqIndex);
+        const target = pair.slice(eqIndex + 1);
+        assignEntry(alias, target);
+      }
+      continue;
+    }
+    if (typeof value === "object" && !Array.isArray(value)) {
+      for (const [rawAlias, rawTarget] of Object.entries(value)) {
+        assignEntry(rawAlias, rawTarget);
+      }
+    }
+  }
+
+  return out;
+}
+
+export function resolveWecomWebhookTargetConfig(rawWebhook, webhookTargets = {}) {
+  const targetMap = normalizeWecomWebhookTargetMap(webhookTargets);
+  let current = String(rawWebhook ?? "").trim();
+  if (!current) return null;
+
+  const visitedAliases = new Set();
+  for (let depth = 0; depth < 8; depth++) {
+    if (/^key:/i.test(current)) {
+      const key = current.replace(/^key:/i, "").trim();
+      return key ? { key } : null;
+    }
+    if (/^https?:\/\//i.test(current)) {
+      return { url: current };
+    }
+    const alias = normalizeWecomWebhookTargetAlias(current);
+    const mapped = alias ? String(targetMap[alias] ?? "").trim() : "";
+    if (mapped) {
+      if (visitedAliases.has(alias)) return null;
+      visitedAliases.add(alias);
+      current = mapped;
+      continue;
+    }
+    return { key: current };
+  }
+  return null;
+}
+
 export function resolveWecomTarget(rawTarget) {
   const raw = String(rawTarget ?? "").trim();
   if (!raw) return null;

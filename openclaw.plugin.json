@@ -235,6 +235,14 @@
         "type": "string",
         "description": "可选：WeCom 出站 API 代理（如 http://127.0.0.1:7890）"
       },
+      "webhooks": {
+        "type": "object",
+        "description": "可选：命名 Webhook 目标映射（key=目标名，value=Webhook URL 或 key:xxx）",
+        "additionalProperties": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
       "allowFrom": {
         "type": "array",
         "description": "可选：允许发送消息的用户列表（空=不限制，支持 '*'）",
@@ -609,6 +617,14 @@
             "outboundProxy": {
               "type": "string",
               "description": "可选：该账户专用 WeCom 出站 API 代理（覆盖 channels.wecom.outboundProxy）"
+            },
+            "webhooks": {
+              "type": "object",
+              "description": "可选：该账户专用命名 Webhook 目标映射（覆盖 channels.wecom.webhooks 同名项）",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              }
             },
             "allowFrom": {
               "type": "array",

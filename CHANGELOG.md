@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - 新增 WeCom 出站目标解析：支持 `user/group/party/tag` 目标格式
 - 新增动态 Agent workspace 模板播种：`dynamicAgent.workspaceTemplate` 在首条命中时自动复制 bootstrap 文件
 - 新增 `webhook` 目标直发能力：`outbound.sendText` 与 `inbound.deliverReply` 支持 `webhook:<url|key>` 文本/媒体回传
+- 新增命名 Webhook 目标映射：支持 `channels.wecom.webhooks` / `accounts.<id>.webhooks` 与 `WECOM_WEBHOOK_TARGETS`
 
 ### Changed
 - P3 模块化拆分第一步：Bot 回包链路从 `src/index.js` 抽离到独立模块（保持行为兼容）

@@ -45,6 +45,8 @@ import {
   resolveWecomObservabilityConfig,
   resolveWecomStreamingConfig,
   resolveWecomStreamManagerConfig,
+  normalizeWecomWebhookTargetMap,
+  resolveWecomWebhookTargetConfig,
   resolveWecomWebhookBotDeliveryConfig,
   resolveVoiceTranscriptionConfig,
   resolveWecomProxyConfig,
@@ -1174,21 +1176,8 @@ function buildWecomMessageSendRequest({
   };
 }
 
-function resolveWebhookTargetConfig(rawWebhook) {
-  const normalized = String(rawWebhook ?? "").trim();
-  if (!normalized) return null;
-  if (/^key:/i.test(normalized)) {
-    const key = normalized.replace(/^key:/i, "").trim();
-    return key ? { key } : null;
-  }
-  if (/^https?:\/\//i.test(normalized)) {
-    return { url: normalized };
-  }
-  return { key: normalized };
-}
-
-async function sendWecomWebhookText({ webhook, text, logger, proxyUrl }) {
-  const target = resolveWebhookTargetConfig(webhook);
+async function sendWecomWebhookText({ webhook, webhookTargets, text, logger, proxyUrl }) {
+  const target = resolveWecomWebhookTargetConfig(webhook, webhookTargets);
   if (!target) {
     throw new Error("invalid webhook target");
   }
@@ -1659,6 +1648,7 @@ function normalizeOutboundMediaUrls({ mediaUrl, mediaUrls } = {}) {
 
 async function sendWecomWebhookMediaBatch({
   webhook,
+  webhookTargets,
   mediaUrl,
   mediaUrls,
   mediaType,
@@ -1666,7 +1656,7 @@ async function sendWecomWebhookMediaBatch({
   proxyUrl,
   maxBytes = 20 * 1024 * 1024,
 } = {}) {
-  const target = resolveWebhookTargetConfig(webhook);
+  const target = resolveWecomWebhookTargetConfig(webhook, webhookTargets);
   if (!target) {
     throw new Error("invalid webhook target");
   }
@@ -1908,6 +1898,7 @@ const WecomChannelPlugin = {
       if (target.webhook) {
         await sendWecomWebhookText({
           webhook: target.webhook,
+          webhookTargets: config?.webhooks,
           text,
           logger: gatewayRuntime?.logger,
           proxyUrl: config?.outboundProxy,
@@ -1947,6 +1938,7 @@ const WecomChannelPlugin = {
       if (target.webhook) {
         const webhookMediaResult = await sendWecomWebhookMediaBatch({
           webhook: target.webhook,
+          webhookTargets: config?.webhooks,
           mediaUrl,
           mediaUrls,
           mediaType,
@@ -1961,6 +1953,7 @@ const WecomChannelPlugin = {
         if (text) {
           await sendWecomWebhookText({
             webhook: target.webhook,
+            webhookTargets: config?.webhooks,
             text,
             logger: gatewayRuntime?.logger,
             proxyUrl,
@@ -2043,6 +2036,7 @@ function normalizeAccountConfig(raw, accountId) {
   const callbackAesKey = String(raw.callbackAesKey ?? "").trim();
   const webhookPath = String(raw.webhookPath ?? "/wecom/callback").trim() || "/wecom/callback";
   const outboundProxy = String(raw.outboundProxy ?? raw.proxyUrl ?? raw.proxy ?? "").trim();
+  const webhooks = normalizeWecomWebhookTargetMap(raw.webhooks);
   const allowFrom = raw.allowFrom;
   const allowFromRejectMessage = String(
     raw.allowFromRejectMessage ?? raw.rejectUnauthorizedMessage ?? "",
@@ -2061,6 +2055,7 @@ function normalizeAccountConfig(raw, accountId) {
     callbackAesKey,
     webhookPath,
     outboundProxy: outboundProxy || undefined,
+    webhooks: Object.keys(webhooks).length > 0 ? webhooks : undefined,
     allowFrom,
     allowFromRejectMessage: allowFromRejectMessage || undefined,
     enabled: raw.enabled !== false,
@@ -2089,6 +2084,7 @@ function readAccountConfigFromEnv({ envVars, accountId }) {
         ? requireEnv("HTTPS_PROXY")
         : envVars?.WECOM_PROXY ?? requireEnv("WECOM_PROXY") ?? requireEnv("HTTPS_PROXY"));
   const outboundProxy = String(outboundProxyRaw ?? "").trim();
+  const webhooks = normalizeWecomWebhookTargetMap(readVar("WEBHOOK_TARGETS"), readVar("WEBHOOKS"));
   const allowFrom = readVar("ALLOW_FROM");
   const allowFromRejectMessage = String(readVar("ALLOW_FROM_REJECT_MESSAGE") ?? "").trim();
   const enabledRaw = String(readVar("ENABLED") ?? "").trim().toLowerCase();
@@ -2105,6 +2101,7 @@ function readAccountConfigFromEnv({ envVars, accountId }) {
     callbackAesKey,
     webhookPath,
     outboundProxy: outboundProxy || undefined,
+    webhooks: Object.keys(webhooks).length > 0 ? webhooks : undefined,
     allowFrom,
     allowFromRejectMessage: allowFromRejectMessage || undefined,
     enabled,
@@ -2115,6 +2112,11 @@ function rebuildWecomAccounts(api) {
   const cfg = api?.config ?? gatewayRuntime?.config ?? {};
   const channelConfig = cfg?.channels?.wecom;
   const envVars = cfg?.env?.vars ?? {};
+  const globalWebhookTargets = normalizeWecomWebhookTargetMap(
+    channelConfig?.webhooks,
+    envVars?.WECOM_WEBHOOK_TARGETS,
+    process.env.WECOM_WEBHOOK_TARGETS,
+  );
   const resolved = new Map();
 
   const upsert = (accountId, rawConfig) => {
@@ -2153,6 +2155,11 @@ function rebuildWecomAccounts(api) {
   }
 
   for (const [accountId, config] of resolved.entries()) {
+    const mergedWebhookTargets = {
+      ...globalWebhookTargets,
+      ...normalizeWecomWebhookTargetMap(config?.webhooks),
+    };
+    config.webhooks = Object.keys(mergedWebhookTargets).length > 0 ? mergedWebhookTargets : undefined;
     config.outboundProxy = resolveWecomProxyConfig({
       channelConfig,
       accountConfig: config,
@@ -4538,5 +4545,5 @@ export const __internal = {
   computeMsgSignature,
   pickAccountBySignature,
   buildWecomMessageSendRequest,
-  resolveWebhookTargetConfig,
+  resolveWecomWebhookTargetConfig,
 };

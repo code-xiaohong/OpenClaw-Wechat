@@ -271,6 +271,7 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | `callbackAesKey` | string | - | 回调 AES Key（敏感） |
 | `webhookPath` | string | `/wecom/callback` | Agent 回调路径 |
 | `outboundProxy` | string | - | WeCom 出站代理 |
+| `webhooks` | object | - | 命名 Webhook 目标映射（如 `{ "ops": "https://...key=xxx" }`） |
 | `accounts` | object | - | 多账户配置 |
 
 ### Bot 配置（`channels.wecom.bot`）
@@ -405,6 +406,7 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 - `party`：`party:2` / `dept:2`
 - `tag`：`tag:ops`
 - `webhook`：`webhook:https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx` 或 `webhook:key:xxx`
+- `webhook(命名)`：`webhook:ops`（从 `channels.wecom.webhooks.ops` 或 `accounts.<id>.webhooks.ops` 解析）
 
 ## 环境变量速查
 
@@ -418,6 +420,7 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | `WECOM_CALLBACK_TOKEN` | Agent 必填 | 回调 Token |
 | `WECOM_CALLBACK_AES_KEY` | Agent 必填 | 回调 AESKey |
 | `WECOM_WEBHOOK_PATH` | 否 | Agent 回调路径（默认 `/wecom/callback`） |
+| `WECOM_WEBHOOK_TARGETS` | 否 | 命名 Webhook 目标映射（`name=url`，多个用 `,`/`;` 分隔） |
 
 ### Bot
 
