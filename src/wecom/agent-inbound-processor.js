@@ -1,5 +1,6 @@
 import { buildWecomInboundContextPayload, buildWecomInboundEnvelopePayload } from "./agent-context.js";
 import { createWecomAgentDispatchHandlers } from "./agent-dispatch-handlers.js";
+import { handleWecomAgentPostDispatchFallback } from "./agent-dispatch-fallback.js";
 import { createWecomLateReplyWatcher } from "./agent-late-reply-watcher.js";
 import { buildWorkspaceAutoSendHints, computeStreamingTailText } from "./agent-reply-format.js";
 import { createWecomAgentTextSender } from "./agent-text-sender.js";
@@ -484,39 +485,19 @@ export function createWecomAgentInboundProcessor(deps = {}) {
         `dispatch timed out after ${replyTimeoutMs}ms`,
       );
 
-      if (streamingEnabled) {
-        await flushStreamingBuffer({ force: true, reason: "post-dispatch" });
-        await dispatchState.streamChunkSendChain;
-      }
-
-      if (!dispatchState.hasDeliveredReply && !dispatchState.hasDeliveredPartialReply) {
-        const blockText = String(dispatchState.blockTextFallback || "").trim();
-        if (blockText) {
-          await sendTextToUser(markdownToWecomText(blockText));
-          dispatchState.hasDeliveredReply = true;
-          api.logger.info?.("wecom: delivered accumulated block reply as final fallback");
-        }
-      }
-
-      if (!dispatchState.hasDeliveredReply && !dispatchState.hasDeliveredPartialReply) {
-        const counts = dispatchResult?.counts ?? {};
-        const queuedFinal = dispatchResult?.queuedFinal === true;
-        const deliveredCount = Number(counts.final ?? 0) + Number(counts.block ?? 0) + Number(counts.tool ?? 0);
-        if (!queuedFinal && deliveredCount === 0) {
-          // 常见于同一会话已有活跃 run：当前消息被排队，暂无可立即发送的最终回复
-          api.logger.warn?.("wecom: no immediate deliverable reply (likely queued behind active run)");
-          await sendProgressNotice(queuedNoticeText);
-          await startLateReplyWatcher("queued-no-final");
-        } else {
-          // 进入这里说明 dispatcher 有输出或已排队，但当前回调还没有拿到可立即下发的 final。
-          // 自建应用不主动发处理中提示，仅转入异步补发观察。
-          api.logger.warn?.(
-            "wecom: dispatch finished without direct final delivery; waiting via late watcher",
-          );
-          await sendProgressNotice(processingNoticeText);
-          await startLateReplyWatcher("dispatch-finished-without-final");
-        }
-      }
+      await handleWecomAgentPostDispatchFallback({
+        api,
+        state: dispatchState,
+        streamingEnabled,
+        flushStreamingBuffer,
+        sendTextToUser,
+        markdownToWecomText,
+        sendProgressNotice,
+        startLateReplyWatcher,
+        processingNoticeText,
+        queuedNoticeText,
+        dispatchResult,
+      });
     } catch (dispatchErr) {
       api.logger.warn?.(`wecom: dispatch failed: ${String(dispatchErr)}`);
       if (isDispatchTimeoutError(dispatchErr)) {
