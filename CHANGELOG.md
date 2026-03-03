@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-03-03
+
+### Added
+- 新增 WeCom 架构拆分模块（本轮核心）：`workspace-*`、`account-config-core`、`api-client-send-*`、`inbound-content-handler-*`、`media-download-*`、`media-url-*`、`webhook-bot-http`、`bot-inbound-dispatch-runtime`
+- 新增 Agent 入站错误处理模块：`src/wecom/agent-inbound-error.js`
+- 新增 Bot 入站执行辅助模块：`src/wecom/bot-inbound-executor-helpers.js`
+- 语法检查脚本升级为自动扫描：`find src -name '*.js' -print0 | xargs -0 -n1 node -c`
+
+### Changed
+- 完成一次性“全量拆分”重构：将 WeCom 主链路中的配置解析、入站处理、出站发送、媒体处理、Webhook 适配等大文件拆分为职责模块，保持对外行为兼容
+- `agent-inbound-processor`、`bot-inbound-executor`、`webhook-bot`、`inbound-content`、`media-download`、`media-url-utils`、`workspace-tools` 均完成瘦身与分层
+- 插件版本升级到 `1.4.0`
+
+### Fixed
+- 修复 `smartDecryptWecomFileBuffer` 拆分后 reason 值兼容性（`decrypt-failed`）与日志语义保持一致
+- 修复发布前版本元数据不一致问题（`package.json` / `package-lock.json` / `openclaw.plugin.json` 对齐）
+
 ## [1.3.3] - 2026-03-03
 
 ### Added
