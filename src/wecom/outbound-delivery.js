@@ -1,8 +1,7 @@
-import crypto from "node:crypto";
-
 import { createWecomDeliveryRouter, parseWecomResponseUrlResult } from "../core/delivery-router.js";
 import { buildWecomBotMixedPayload, normalizeWecomBotOutboundMediaUrls } from "./webhook-adapter.js";
 import { resolveWecomOutboundMediaTarget } from "./media-url-utils.js";
+import { createWecomWebhookBotMediaSender } from "./outbound-webhook-media.js";
 import { buildActiveStreamMsgItems } from "./outbound-stream-msg-item.js";
 import {
   resolveWebhookBotSendUrl,
@@ -68,6 +67,16 @@ export function createWecomBotReplyDeliverer({
     return options?.dispatcher;
   }
 
+  const sendWebhookBotMediaBatch = createWecomWebhookBotMediaSender({
+    resolveWebhookBotSendUrl: resolveWebhookBotSendUrlFn,
+    resolveWecomOutboundMediaTarget,
+    fetchMediaFromUrl,
+    webhookSendImage: webhookSendImageFn,
+    webhookSendFileBuffer: webhookSendFileBufferFn,
+    attachWecomProxyDispatcher,
+    fetchImpl,
+  });
+
   async function sendWecomBotPayloadViaResponseUrl({
     responseUrl,
     payload,
@@ -105,78 +114,6 @@ export function createWecomBotReplyDeliverer({
     return {
       status: response.status,
       errcode: result.errcode,
-    };
-  }
-
-  async function sendWebhookBotMediaBatch({
-    api,
-    webhookBotPolicy,
-    proxyUrl,
-    mediaUrls,
-    mediaType,
-  }) {
-    const sendUrl = resolveWebhookBotSendUrlFn({
-      url: webhookBotPolicy.url,
-      key: webhookBotPolicy.key,
-    });
-    if (!sendUrl) {
-      return { sentCount: 0, failedCount: mediaUrls.length, failedUrls: mediaUrls, reason: "webhook-bot-url-missing" };
-    }
-
-    const dispatcher = resolveWebhookDispatcher(sendUrl, proxyUrl, api.logger);
-    let sentCount = 0;
-    const failedUrls = [];
-
-    for (const mediaUrl of mediaUrls) {
-      const target = resolveWecomOutboundMediaTarget({ mediaUrl, mediaType });
-      try {
-        const { buffer } = await fetchMediaFromUrl(mediaUrl, {
-          proxyUrl,
-          logger: api.logger,
-          forceProxy: Boolean(proxyUrl),
-          maxBytes: 20 * 1024 * 1024,
-        });
-        if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
-          throw new Error("empty media buffer");
-        }
-
-        if (target.type === "image") {
-          const base64 = buffer.toString("base64");
-          const md5 = crypto.createHash("md5").update(buffer).digest("hex");
-          await webhookSendImageFn({
-            url: webhookBotPolicy.url,
-            key: webhookBotPolicy.key,
-            base64,
-            md5,
-            timeoutMs: webhookBotPolicy.timeoutMs,
-            dispatcher,
-            fetchImpl,
-          });
-        } else {
-          await webhookSendFileBufferFn({
-            url: webhookBotPolicy.url,
-            key: webhookBotPolicy.key,
-            buffer,
-            filename: target.filename,
-            timeoutMs: webhookBotPolicy.timeoutMs,
-            dispatcher,
-            fetchImpl,
-          });
-        }
-        sentCount += 1;
-      } catch (err) {
-        failedUrls.push(mediaUrl);
-        api.logger.warn?.(
-          `wecom(bot): webhook media send failed target=${mediaUrl} type=${target.type} reason=${String(err?.message || err)}`,
-        );
-      }
-    }
-
-    return {
-      sentCount,
-      failedCount: failedUrls.length,
-      failedUrls,
-      reason: failedUrls.length > 0 && sentCount === 0 ? "webhook-bot-media-failed" : "ok",
     };
   }
 
