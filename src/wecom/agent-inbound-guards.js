@@ -1,0 +1,108 @@
+function assertFunction(name, value) {
+  if (typeof value !== "function") {
+    throw new Error(`agent-inbound-guards: ${name} is required`);
+  }
+}
+
+export async function applyWecomAgentInboundGuards({
+  api,
+  config,
+  accountId = "",
+  fromUser,
+  msgType = "text",
+  isGroupChat = false,
+  chatId = "",
+  commandBody = "",
+  normalizedFromUser = "",
+  groupChatPolicy = {},
+  shouldTriggerWecomGroupResponse,
+  shouldStripWecomGroupMentions,
+  stripWecomGroupMentions,
+  resolveWecomCommandPolicy,
+  resolveWecomAllowFromPolicy,
+  isWecomSenderAllowed,
+  extractLeadingSlashCommand,
+  COMMANDS,
+  sendTextToUser,
+  commandHandlerContext = {},
+} = {}) {
+  assertFunction("shouldTriggerWecomGroupResponse", shouldTriggerWecomGroupResponse);
+  assertFunction("shouldStripWecomGroupMentions", shouldStripWecomGroupMentions);
+  assertFunction("stripWecomGroupMentions", stripWecomGroupMentions);
+  assertFunction("resolveWecomCommandPolicy", resolveWecomCommandPolicy);
+  assertFunction("resolveWecomAllowFromPolicy", resolveWecomAllowFromPolicy);
+  assertFunction("isWecomSenderAllowed", isWecomSenderAllowed);
+  assertFunction("extractLeadingSlashCommand", extractLeadingSlashCommand);
+  assertFunction("sendTextToUser", sendTextToUser);
+
+  let nextCommandBody = String(commandBody ?? "");
+
+  if (msgType === "text" && isGroupChat) {
+    if (!groupChatPolicy.enabled) {
+      api?.logger?.info?.(`wecom: group chat processing disabled, skipped chatId=${chatId || "unknown"}`);
+      return { ok: false, commandBody: nextCommandBody, isAdminUser: false };
+    }
+    if (!shouldTriggerWecomGroupResponse(nextCommandBody, groupChatPolicy)) {
+      api?.logger?.info?.(
+        `wecom: group message skipped by trigger policy chatId=${chatId || "unknown"} mode=${groupChatPolicy.triggerMode || "direct"}`,
+      );
+      return { ok: false, commandBody: nextCommandBody, isAdminUser: false };
+    }
+    if (shouldStripWecomGroupMentions(groupChatPolicy)) {
+      nextCommandBody = stripWecomGroupMentions(nextCommandBody, groupChatPolicy.mentionPatterns);
+    }
+    if (!nextCommandBody.trim()) {
+      api?.logger?.info?.(`wecom: group message became empty after mention strip chatId=${chatId || "unknown"}`);
+      return { ok: false, commandBody: nextCommandBody, isAdminUser: false };
+    }
+  }
+
+  const commandPolicy = resolveWecomCommandPolicy(api);
+  const isAdminUser = commandPolicy.adminUsers.includes(normalizedFromUser);
+  const allowFromPolicy = resolveWecomAllowFromPolicy(api, config?.accountId || accountId || "default", config);
+  const senderAllowed = isAdminUser || isWecomSenderAllowed({
+    senderId: normalizedFromUser,
+    allowFrom: allowFromPolicy.allowFrom,
+  });
+  if (!senderAllowed) {
+    api?.logger?.warn?.(
+      `wecom: sender blocked by allowFrom account=${config?.accountId || "default"} user=${normalizedFromUser}`,
+    );
+    if (allowFromPolicy.rejectMessage) {
+      await sendTextToUser(allowFromPolicy.rejectMessage);
+    }
+    return { ok: false, commandBody: nextCommandBody, isAdminUser };
+  }
+
+  if (msgType === "text") {
+    let commandKey = extractLeadingSlashCommand(nextCommandBody);
+    if (commandKey === "/clear") {
+      api?.logger?.info?.("wecom: translating /clear to native /reset command");
+      nextCommandBody = nextCommandBody.replace(/^\/clear\b/i, "/reset");
+      commandKey = "/reset";
+    }
+    if (commandKey) {
+      const commandAllowed =
+        commandPolicy.allowlist.includes(commandKey) ||
+        (commandKey === "/reset" && commandPolicy.allowlist.includes("/clear"));
+      if (commandPolicy.enabled && !isAdminUser && !commandAllowed) {
+        api?.logger?.info?.(`wecom: command blocked by allowlist user=${fromUser} command=${commandKey}`);
+        await sendTextToUser(commandPolicy.rejectMessage);
+        return { ok: false, commandBody: nextCommandBody, isAdminUser };
+      }
+      const handler = COMMANDS?.[commandKey];
+      if (typeof handler === "function") {
+        api?.logger?.info?.(`wecom: handling command ${commandKey}`);
+        await handler(commandHandlerContext);
+        return { ok: false, commandBody: nextCommandBody, isAdminUser, commandHandled: true };
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    commandBody: nextCommandBody,
+    isAdminUser,
+    commandHandled: false,
+  };
+}

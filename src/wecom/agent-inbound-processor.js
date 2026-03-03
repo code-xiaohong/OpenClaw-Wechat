@@ -1,6 +1,7 @@
 import { buildWecomInboundContextPayload, buildWecomInboundEnvelopePayload } from "./agent-context.js";
 import { createWecomAgentDispatchHandlers } from "./agent-dispatch-handlers.js";
 import { handleWecomAgentPostDispatchFallback } from "./agent-dispatch-fallback.js";
+import { applyWecomAgentInboundGuards } from "./agent-inbound-guards.js";
 import { createWecomAgentLateReplyRuntime } from "./agent-late-reply-runtime.js";
 import { createWecomAgentDispatchState, resolveWecomAgentReplyRuntimePolicy } from "./agent-reply-runtime.js";
 import { prepareWecomAgentRuntimeContext } from "./agent-runtime-context.js";
@@ -114,79 +115,41 @@ export function createWecomAgentInboundProcessor(deps = {}) {
     const dynamicAgentPolicy = resolveWecomDynamicAgentPolicy(api);
     api.logger.info?.(`wecom: processing ${msgType} message for session ${sessionId}${isGroupChat ? " (group)" : ""}`);
 
-    // 群聊触发策略（仅对文本消息）
-    if (msgType === "text" && isGroupChat) {
-      if (!groupChatPolicy.enabled) {
-        api.logger.info?.(`wecom: group chat processing disabled, skipped chatId=${chatId || "unknown"}`);
-        return;
-      }
-      if (!shouldTriggerWecomGroupResponse(commandBody, groupChatPolicy)) {
-        api.logger.info?.(
-          `wecom: group message skipped by trigger policy chatId=${chatId || "unknown"} mode=${groupChatPolicy.triggerMode || "direct"}`,
-        );
-        return;
-      }
-      if (shouldStripWecomGroupMentions(groupChatPolicy)) {
-        commandBody = stripWecomGroupMentions(commandBody, groupChatPolicy.mentionPatterns);
-      }
-      if (!commandBody.trim()) {
-        api.logger.info?.(`wecom: group message became empty after mention strip chatId=${chatId || "unknown"}`);
-        return;
-      }
-    }
-
-    const commandPolicy = resolveWecomCommandPolicy(api);
-    const isAdminUser = commandPolicy.adminUsers.includes(normalizedFromUser);
-    const allowFromPolicy = resolveWecomAllowFromPolicy(api, config.accountId || accountId || "default", config);
-    const senderAllowed = isAdminUser || isWecomSenderAllowed({
-      senderId: normalizedFromUser,
-      allowFrom: allowFromPolicy.allowFrom,
+    const guardResult = await applyWecomAgentInboundGuards({
+      api,
+      config,
+      accountId,
+      fromUser,
+      msgType,
+      isGroupChat,
+      chatId,
+      commandBody,
+      normalizedFromUser,
+      groupChatPolicy,
+      shouldTriggerWecomGroupResponse,
+      shouldStripWecomGroupMentions,
+      stripWecomGroupMentions,
+      resolveWecomCommandPolicy,
+      resolveWecomAllowFromPolicy,
+      isWecomSenderAllowed,
+      extractLeadingSlashCommand,
+      COMMANDS,
+      sendTextToUser,
+      commandHandlerContext: {
+        api,
+        fromUser,
+        corpId,
+        corpSecret,
+        agentId,
+        accountId: config.accountId || "default",
+        proxyUrl,
+        chatId,
+        isGroupChat,
+      },
     });
-    if (!senderAllowed) {
-      api.logger.warn?.(
-        `wecom: sender blocked by allowFrom account=${config.accountId || "default"} user=${normalizedFromUser}`,
-      );
-      if (allowFromPolicy.rejectMessage) {
-        await sendTextToUser(allowFromPolicy.rejectMessage);
-      }
-      return;
-    }
-
-    // 命令检测（仅对文本消息）
-    if (msgType === "text") {
-      let commandKey = extractLeadingSlashCommand(commandBody);
-      if (commandKey === "/clear") {
-        api.logger.info?.("wecom: translating /clear to native /reset command");
-        commandBody = commandBody.replace(/^\/clear\b/i, "/reset");
-        commandKey = "/reset";
-      }
-      if (commandKey) {
-        const commandAllowed =
-          commandPolicy.allowlist.includes(commandKey) ||
-          (commandKey === "/reset" && commandPolicy.allowlist.includes("/clear"));
-        if (commandPolicy.enabled && !isAdminUser && !commandAllowed) {
-          api.logger.info?.(`wecom: command blocked by allowlist user=${fromUser} command=${commandKey}`);
-          await sendTextToUser(commandPolicy.rejectMessage);
-          return;
-        }
-        const handler = COMMANDS[commandKey];
-        if (handler) {
-          api.logger.info?.(`wecom: handling command ${commandKey}`);
-          await handler({
-            api,
-            fromUser,
-            corpId,
-            corpSecret,
-            agentId,
-            accountId: config.accountId || "default",
-            proxyUrl,
-            chatId,
-            isGroupChat,
-          });
-          return; // 命令已处理，不再调用 AI
-        }
-      }
-    }
+    if (!guardResult.ok) return;
+    commandBody = guardResult.commandBody;
+    const isAdminUser = guardResult.isAdminUser === true;
 
     const inboundResult = await buildInboundContent({
       api,
