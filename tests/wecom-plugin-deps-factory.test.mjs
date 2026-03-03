@@ -34,18 +34,7 @@ test("createPluginProcessingDeps maps context into three dependency groups", () 
     extractLeadingSlashCommand: fn,
     buildWecomBotHelpText: fn,
     buildWecomBotStatusText: fn,
-    fetchMediaFromUrl: fn,
-    detectImageContentTypeFromBuffer: fn,
-    decryptWecomMediaBuffer: fn,
-    pickImageFileExtension: fn,
-    WECOM_TEMP_DIR_NAME: "tmp",
-    mkdir: fn,
-    tmpdir: fn,
-    join: fn,
-    writeFile: fn,
-    inferFilenameFromMediaDownload: fn,
-    smartDecryptWecomFileBuffer: fn,
-    basename: fn,
+    buildBotInboundContent: fn,
     resolveWecomAgentRoute: fn,
     seedDynamicAgentWorkspace: fn,
     resolveSessionTranscriptFilePath: fn,
@@ -82,6 +71,7 @@ test("createPluginProcessingDeps maps context into three dependency groups", () 
   assert.equal(typeof deps.agentInboundDeps, "object");
   assert.equal(typeof deps.textSchedulerDeps, "object");
   assert.equal(deps.botInboundDeps.buildWecomBotSessionId, fn);
+  assert.equal(deps.botInboundDeps.buildBotInboundContent, fn);
   assert.equal(deps.agentInboundDeps.sendWecomText, fn);
   assert.equal(deps.textSchedulerDeps.executeInboundTaskWithSessionQueue, fn);
 });

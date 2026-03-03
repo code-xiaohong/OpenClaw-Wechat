@@ -41,6 +41,7 @@ import {
 import { createWecomPluginBaseServices } from "./plugin-base-services.js";
 import { createWecomPluginAccountPolicyServices } from "./plugin-account-policy-services.js";
 import { createWecomPluginDeliveryInboundServices } from "./plugin-delivery-inbound-services.js";
+import { createWecomBotInboundContentBuilder } from "./bot-inbound-content.js";
 import { markdownToWecomText } from "./text-format.js";
 import {
   buildWecomSessionId,
@@ -102,11 +103,26 @@ export function createWecomPluginServices({
     resolveWecomVoiceTranscriptionConfig: accountPolicy.resolveWecomVoiceTranscriptionConfig,
     transcribeInboundVoice: accountPolicy.transcribeInboundVoice,
   });
+  const buildBotInboundContent = createWecomBotInboundContentBuilder({
+    fetchMediaFromUrl: base.fetchMediaFromUrl,
+    detectImageContentTypeFromBuffer,
+    decryptWecomMediaBuffer,
+    pickImageFileExtension,
+    inferFilenameFromMediaDownload,
+    smartDecryptWecomFileBuffer,
+    basename,
+    mkdir,
+    tmpdir,
+    join,
+    writeFile,
+    WECOM_TEMP_DIR_NAME,
+  });
 
   return {
     ...base,
     ...accountPolicy,
     ...deliveryInbound,
+    buildBotInboundContent,
     ACTIVE_LATE_REPLY_WATCHERS,
     WECOM_TEMP_DIR_NAME,
     normalizePluginHttpPath,

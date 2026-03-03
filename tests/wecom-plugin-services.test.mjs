@@ -7,6 +7,7 @@ test("createWecomPluginServices returns core runtime service bindings", () => {
   const services = createWecomPluginServices();
   assert.equal(typeof services.sendWecomText, "function");
   assert.equal(typeof services.buildInboundContent, "function");
+  assert.equal(typeof services.buildBotInboundContent, "function");
   assert.equal(typeof services.deliverBotReplyText, "function");
   assert.equal(typeof services.syncWecomSessionQueuePolicy, "function");
   assert.equal(typeof services.WecomChannelPlugin, "object");
