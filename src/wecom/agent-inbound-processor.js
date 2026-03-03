@@ -1,6 +1,7 @@
 import { buildWecomInboundContextPayload, buildWecomInboundEnvelopePayload } from "./agent-context.js";
 import { createWecomAgentDispatchHandlers } from "./agent-dispatch-handlers.js";
 import { handleWecomAgentPostDispatchFallback } from "./agent-dispatch-fallback.js";
+import { createWecomAgentLateReplyRuntime } from "./agent-late-reply-runtime.js";
 import { createWecomAgentDispatchState, resolveWecomAgentReplyRuntimePolicy } from "./agent-reply-runtime.js";
 import { createWecomAgentStreamingChunkManager } from "./agent-streaming-chunks.js";
 import { createWecomLateReplyWatcher } from "./agent-late-reply-watcher.js";
@@ -314,7 +315,6 @@ export function createWecomAgentInboundProcessor(deps = {}) {
 
     const dispatchState = createWecomAgentDispatchState();
     let progressNoticeTimer = null;
-    let lateReplyWatcherPromise = null;
     const streamingPolicy = resolveWecomReplyStreamingPolicy(api);
     const streamingEnabled = streamingPolicy.enabled === true;
     const { replyTimeoutMs, progressNoticeDelayMs, lateReplyWatchMs, lateReplyPollMs } =
@@ -335,46 +335,23 @@ export function createWecomAgentInboundProcessor(deps = {}) {
       sendTextToUser,
       logger: api.logger,
     });
-    const sendProgressNotice = async (text = processingNoticeText) => {
-      const noticeText = String(text ?? "").trim();
-      if (!noticeText) return;
-      if (dispatchState.hasDeliveredReply || dispatchState.hasDeliveredPartialReply || dispatchState.hasSentProgressNotice) return;
-      dispatchState.hasSentProgressNotice = true;
-      await sendTextToUser(noticeText);
-    };
-    const sendFailureFallback = async (reason) => {
-      if (dispatchState.hasDeliveredReply) return;
-      dispatchState.hasDeliveredReply = true;
-      const reasonText = String(reason ?? "unknown").slice(0, 160);
-      await sendTextToUser(`抱歉，当前模型请求超时或网络不稳定，请稍后重试。\n故障信息: ${reasonText}`);
-    };
-    const startLateReplyWatcher = async (reason = "pending-final") => {
-      if (dispatchState.hasDeliveredReply || dispatchState.hasDeliveredPartialReply || lateReplyWatcherPromise) return;
-
-      const watchStartedAt = Date.now();
-      const watchId = `${sessionId}:${msgId || watchStartedAt}:${Math.random().toString(36).slice(2, 8)}`;
-      lateReplyWatcherPromise = ensureLateReplyWatcherRunner()({
-        watchId,
-        reason,
-        sessionId,
-        sessionTranscriptId: ctxPayload.SessionId || sessionId,
-        accountId: config.accountId || "default",
-        storePath,
-        logger: api.logger,
-        watchStartedAt,
-        watchMs: lateReplyWatchMs,
-        pollMs: lateReplyPollMs,
-        activeWatchers: ACTIVE_LATE_REPLY_WATCHERS,
-        isDelivered: () => dispatchState.hasDeliveredReply,
-        markDelivered: () => {
-          dispatchState.hasDeliveredReply = true;
-        },
-        sendText: async (text) => sendTextToUser(text),
-        onFailureFallback: async (err) => sendFailureFallback(err),
-      }).finally(() => {
-        lateReplyWatcherPromise = null;
-      });
-    };
+    const lateReplyRuntime = createWecomAgentLateReplyRuntime({
+      dispatchState,
+      sessionId,
+      msgId,
+      transcriptSessionId: ctxPayload.SessionId || sessionId,
+      accountId: config.accountId || "default",
+      storePath,
+      lateReplyWatchMs,
+      lateReplyPollMs,
+      sendTextToUser,
+      ensureLateReplyWatcherRunner,
+      activeWatchers: ACTIVE_LATE_REPLY_WATCHERS,
+      logger: api.logger,
+    });
+    const sendProgressNotice = lateReplyRuntime.sendProgressNotice;
+    const sendFailureFallback = lateReplyRuntime.sendFailureFallback;
+    const startLateReplyWatcher = lateReplyRuntime.startLateReplyWatcher;
 
     try {
       if (progressNoticeDelayMs > 0) {
