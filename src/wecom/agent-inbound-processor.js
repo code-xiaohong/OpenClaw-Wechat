@@ -1,5 +1,6 @@
 import { buildWecomInboundContextPayload, buildWecomInboundEnvelopePayload } from "./agent-context.js";
 import { createWecomLateReplyWatcher } from "./agent-late-reply-watcher.js";
+import { buildWorkspaceAutoSendHints, computeStreamingTailText } from "./agent-reply-format.js";
 import { createWecomAgentTextSender } from "./agent-text-sender.js";
 
 export function createWecomAgentInboundProcessor(deps = {}) {
@@ -477,10 +478,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
                   if (streamChunkSentCount > 0) {
                     const finalText = markdownToWecomText(payload.text).trim();
                     const streamedText = markdownToWecomText(blockTextFallback).trim();
-                    const tailText =
-                      finalText && streamedText && finalText.startsWith(streamedText)
-                        ? finalText.slice(streamedText.length).trim()
-                        : "";
+                    const tailText = computeStreamingTailText({ finalText, streamedText });
                     if (tailText) {
                       await sendTextToUser(tailText);
                     }
@@ -505,19 +503,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
                     logger: api.logger,
                     proxyUrl,
                   });
-                  const workspaceHints = [];
-                  if (workspaceAutoMedia.sentCount > 0) {
-                    workspaceHints.push(
-                      `已按回复中的 /workspace 路径自动回传 ${workspaceAutoMedia.sentCount} 个文件。`,
-                    );
-                  }
-                  if (workspaceAutoMedia.failed.length > 0) {
-                    const failedPreview = workspaceAutoMedia.failed
-                      .slice(0, 3)
-                      .map((item) => `${item.workspacePath}（${String(item.reason ?? "失败").slice(0, 60)}）`)
-                      .join("\n");
-                    workspaceHints.push(`以下文件自动回传失败：\n${failedPreview}`);
-                  }
+                  const workspaceHints = buildWorkspaceAutoSendHints(workspaceAutoMedia);
                   const finalReplyText = [formattedReply, ...workspaceHints].filter(Boolean).join("\n\n");
                   await sendTextToUser(finalReplyText);
                   hasDeliveredReply = true;
