@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_remote_e2e:
+        description: "Run remote WeCom e2e checks"
+        type: boolean
+        default: false
+
+jobs:
+  unit-test:
+    name: Unit Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run test
+        run: npm test
+
+  remote-e2e:
+    name: Remote WeCom E2E
+    runs-on: ubuntu-latest
+    needs: unit-test
+    if: github.event_name == 'workflow_dispatch' && inputs.run_remote_e2e == true
+    env:
+      WECOM_E2E_ENABLE: "1"
+      WECOM_E2E_BOT_URL: ${{ secrets.WECOM_E2E_BOT_URL }}
+      WECOM_E2E_AGENT_URL: ${{ secrets.WECOM_E2E_AGENT_URL }}
+      WECOM_E2E_FROM_USER: ${{ secrets.WECOM_E2E_FROM_USER }}
+      WECOM_E2E_CONTENT: "/status"
+      WECOM_E2E_TIMEOUT_MS: "20000"
+      WECOM_E2E_POLL_COUNT: "25"
+      WECOM_E2E_POLL_INTERVAL_MS: "1200"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate remote e2e secrets
+        run: |
+          if [ -z "$WECOM_E2E_BOT_URL" ] && [ -z "$WECOM_E2E_AGENT_URL" ]; then
+            echo "Missing required secrets: set WECOM_E2E_BOT_URL and/or WECOM_E2E_AGENT_URL"
+            exit 1
+          fi
+
+      - name: Run remote e2e
+        run: npm run test:e2e:remote
