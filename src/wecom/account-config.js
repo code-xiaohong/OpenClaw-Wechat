@@ -1,4 +1,4 @@
-import { normalizePluginHttpPath } from "openclaw/plugin-sdk";
+import { normalizePluginHttpPath } from "./http-path.js";
 
 function asNumber(v, fallback = null) {
   if (v == null) return fallback;

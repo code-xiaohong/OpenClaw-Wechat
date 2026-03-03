@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
-import { basename } from "node:path";
 
 import { createWecomDeliveryRouter, parseWecomResponseUrlResult } from "../core/delivery-router.js";
 import { buildWecomBotMixedPayload, normalizeWecomBotOutboundMediaUrls } from "./webhook-adapter.js";
+import { resolveWecomOutboundMediaTarget } from "./media-url-utils.js";
+import { buildActiveStreamMsgItems } from "./outbound-stream-msg-item.js";
 import {
   resolveWebhookBotSendUrl,
   webhookSendFileBuffer,
@@ -14,31 +15,6 @@ function assertFunction(name, fn) {
   if (typeof fn !== "function") {
     throw new Error(`createWecomBotReplyDeliverer missing function dependency: ${name}`);
   }
-}
-
-function resolveWecomOutboundMediaTarget({ mediaUrl, mediaType }) {
-  const normalizedType = String(mediaType ?? "").trim().toLowerCase();
-  const lowerUrl = String(mediaUrl ?? "").trim().toLowerCase();
-  const pathPart = lowerUrl.split("?")[0].split("#")[0];
-  const ext = (pathPart.match(/\.([a-z0-9]{1,8})$/)?.[1] ?? "").toLowerCase();
-  const inferredName = (() => {
-    const raw = String(mediaUrl ?? "").trim();
-    if (!raw) return "attachment";
-    const withoutQuery = raw.split("?")[0].split("#")[0];
-    const name = basename(withoutQuery);
-    return name || "attachment";
-  })();
-
-  if (normalizedType === "image") return { type: "image", filename: inferredName || "image.jpg" };
-  if (normalizedType === "video") return { type: "video", filename: inferredName || "video.mp4" };
-  if (normalizedType === "file") return { type: "file", filename: inferredName || "file.bin" };
-
-  const imageExts = new Set(["jpg", "jpeg", "png", "gif", "bmp", "webp", "heic", "heif"]);
-  const videoExts = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"]);
-
-  if (imageExts.has(ext)) return { type: "image", filename: inferredName || `image.${ext}` };
-  if (videoExts.has(ext)) return { type: "video", filename: inferredName || `video.${ext}` };
-  return { type: "file", filename: inferredName || "file.bin" };
 }
 
 export function createWecomBotReplyDeliverer({
@@ -55,6 +31,7 @@ export function createWecomBotReplyDeliverer({
   hasBotStream,
   resolveActiveBotStreamId = () => "",
   finishBotStream,
+  drainBotStreamMedia = () => [],
   getWecomConfig,
   sendWecomText,
   fetchMediaFromUrl,
@@ -77,6 +54,7 @@ export function createWecomBotReplyDeliverer({
   assertFunction("hasBotStream", hasBotStream);
   assertFunction("resolveActiveBotStreamId", resolveActiveBotStreamId);
   assertFunction("finishBotStream", finishBotStream);
+  assertFunction("drainBotStreamMedia", drainBotStreamMedia);
   assertFunction("getWecomConfig", getWecomConfig);
   assertFunction("sendWecomText", sendWecomText);
   assertFunction("fetchMediaFromUrl", fetchMediaFromUrl);
@@ -256,17 +234,74 @@ export function createWecomBotReplyDeliverer({
           if (!targetStreamId || !hasBotStream(targetStreamId)) {
             return { ok: false, reason: "stream-missing" };
           }
-          const streamContent =
-            normalizedMediaUrls.length > 0
-              ? `${content || fallbackText}${mediaFallbackSuffix}`.trim()
-              : String(content ?? "").trim();
-          finishBotStream(targetStreamId, streamContent);
+
+          const drainedQueuedMedia = drainBotStreamMedia(targetStreamId);
+          const queuedMedia = Array.isArray(drainedQueuedMedia) ? drainedQueuedMedia : [];
+          const queuedMediaUrls = [];
+          let queuedMediaType = "";
+          for (const item of queuedMedia) {
+            const url = String(item?.url ?? "").trim();
+            if (!url) continue;
+            queuedMediaUrls.push(url);
+            if (!queuedMediaType) {
+              queuedMediaType = String(item?.mediaType ?? "").trim().toLowerCase();
+            }
+          }
+          const mergedMediaUrls = normalizeWecomBotOutboundMediaUrls({
+            mediaUrls: [...normalizedMediaUrls, ...queuedMediaUrls],
+          });
+          const effectiveMediaType = String(mediaType ?? "").trim().toLowerCase() || queuedMediaType || undefined;
+
+          let streamMsgItem = [];
+          let fallbackMediaUrls = mergedMediaUrls;
+          if (mergedMediaUrls.length > 0) {
+            const processed = await buildActiveStreamMsgItems({
+              mediaUrls: mergedMediaUrls,
+              mediaType: effectiveMediaType,
+              fetchMediaFromUrl,
+              proxyUrl: botProxyUrl,
+              logger: api.logger,
+            });
+            streamMsgItem = processed.msgItem;
+            fallbackMediaUrls = processed.fallbackUrls;
+          }
+
+          let streamContent = String(content ?? "").trim();
+          if (!streamContent) {
+            streamContent =
+              fallbackMediaUrls.length > 0
+                ? fallbackText
+                : streamMsgItem.length > 0
+                  ? "已收到模型返回的媒体结果。"
+                  : "";
+          }
+          if (
+            !normalizedText &&
+            streamMsgItem.length > 0 &&
+            fallbackMediaUrls.length === 0 &&
+            streamContent === fallbackText
+          ) {
+            streamContent = "已收到模型返回的媒体结果。";
+          }
+          if (fallbackMediaUrls.length > 0) {
+            const suffix = `\n\n媒体链接：\n${fallbackMediaUrls.join("\n")}`;
+            streamContent = `${streamContent}${suffix}`.trim();
+          }
+          if (!streamContent) {
+            streamContent = "已收到模型返回的结果。";
+          }
+
+          finishBotStream(targetStreamId, streamContent, {
+            msgItem: streamMsgItem,
+          });
           return {
             ok: true,
             meta: {
               streamId: targetStreamId,
               recoveredBySession,
-              mediaAsLinks: normalizedMediaUrls.length > 0,
+              mediaAsLinks: fallbackMediaUrls.length > 0,
+              msgItemCount: streamMsgItem.length,
+              queuedMediaCount: queuedMediaUrls.length,
             },
           };
         },

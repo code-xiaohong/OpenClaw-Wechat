@@ -47,9 +47,10 @@ function createDeliverer(overrides = {}) {
     createDeliveryTraceId: () => "trace-test",
     hasBotStream: (streamId) => streamId === "stream-ok",
     resolveActiveBotStreamId: () => "",
-    finishBotStream: (streamId, content) => {
-      finishedStreams.push({ streamId, content });
+    finishBotStream: (streamId, content, options) => {
+      finishedStreams.push({ streamId, content, options });
     },
+    drainBotStreamMedia: () => [],
     getWecomConfig: () => ({
       accountId: "default",
       corpId: "ww-test",
@@ -61,7 +62,7 @@ function createDeliverer(overrides = {}) {
       sentMessages.push({ toUser, text });
     },
     fetchMediaFromUrl: async () => ({
-      buffer: Buffer.from("media"),
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]),
       contentType: "image/png",
     }),
   };
@@ -90,7 +91,7 @@ test("deliverBotReplyText uses active_stream when available", async () => {
   assert.equal(result.layer, "active_stream");
   assert.equal(result.deliveryPath, "active_stream");
   assert.equal(result.finalStatus, "ok");
-  assert.deepEqual(deliverer.finishedStreams, [{ streamId: "stream-ok", content: "hello" }]);
+  assert.deepEqual(deliverer.finishedStreams, [{ streamId: "stream-ok", content: "hello", options: { msgItem: [] } }]);
 });
 
 test("deliverBotReplyText falls back to agent_push with media links", async () => {
@@ -186,11 +187,11 @@ test("deliverBotReplyText can recover active stream by session id", async () => 
   assert.equal(result.ok, true);
   assert.equal(result.layer, "active_stream");
   assert.deepEqual(deliverer.finishedStreams, [
-    { streamId: "stream-recovered", content: "hello recovered" },
+    { streamId: "stream-recovered", content: "hello recovered", options: { msgItem: [] } },
   ]);
 });
 
-test("deliverBotReplyText sends media links via active_stream when stream exists", async () => {
+test("deliverBotReplyText sends image msg_item via active_stream when stream exists", async () => {
   const deliverer = createDeliverer({
     hasBotStream: (streamId) => streamId === "stream-ok",
   });
@@ -207,6 +208,81 @@ test("deliverBotReplyText sends media links via active_stream when stream exists
   assert.equal(result.ok, true);
   assert.equal(result.layer, "active_stream");
   assert.equal(deliverer.finishedStreams.length, 1);
+  assert.equal(deliverer.finishedStreams[0].content, "媒体结果");
+  assert.equal(deliverer.finishedStreams[0].options?.msgItem?.length, 1);
+  assert.equal(deliverer.finishedStreams[0].options?.msgItem?.[0]?.msgtype, "image");
+});
+
+test("deliverBotReplyText falls back to media links when active_stream msg_item build fails", async () => {
+  const deliverer = createDeliverer({
+    hasBotStream: (streamId) => streamId === "stream-ok",
+    fetchMediaFromUrl: async () => {
+      throw new Error("download failed");
+    },
+  });
+
+  const result = await deliverer.deliverBotReplyText({
+    api: createApiMock(),
+    fromUser: "dingxiang",
+    sessionId: "wecom-bot:dingxiang",
+    streamId: "stream-ok",
+    text: "媒体结果",
+    mediaUrls: ["https://example.com/a.png"],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.layer, "active_stream");
+  assert.equal(deliverer.finishedStreams.length, 1);
   assert.match(deliverer.finishedStreams[0].content, /媒体链接/);
   assert.match(deliverer.finishedStreams[0].content, /https:\/\/example.com\/a\.png/);
+  assert.equal(deliverer.finishedStreams[0].options?.msgItem?.length, 0);
+});
+
+test("deliverBotReplyText falls back to media links when image format is unsupported", async () => {
+  const deliverer = createDeliverer({
+    hasBotStream: (streamId) => streamId === "stream-ok",
+    fetchMediaFromUrl: async () => ({
+      buffer: Buffer.from("not-a-jpg-or-png"),
+      contentType: "application/octet-stream",
+    }),
+  });
+
+  const result = await deliverer.deliverBotReplyText({
+    api: createApiMock(),
+    fromUser: "dingxiang",
+    sessionId: "wecom-bot:dingxiang",
+    streamId: "stream-ok",
+    text: "",
+    mediaUrls: ["https://example.com/a.png"],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.layer, "active_stream");
+  assert.equal(deliverer.finishedStreams.length, 1);
+  assert.match(deliverer.finishedStreams[0].content, /媒体链接/);
+  assert.equal(deliverer.finishedStreams[0].options?.msgItem?.length, 0);
+});
+
+test("deliverBotReplyText consumes queued stream media when final payload has no media", async () => {
+  const deliverer = createDeliverer({
+    hasBotStream: (streamId) => streamId === "stream-ok",
+    drainBotStreamMedia: (streamId) => {
+      if (streamId !== "stream-ok") return [];
+      return [{ url: "https://example.com/queued.png", mediaType: "image" }];
+    },
+  });
+
+  const result = await deliverer.deliverBotReplyText({
+    api: createApiMock(),
+    fromUser: "dingxiang",
+    sessionId: "wecom-bot:dingxiang",
+    streamId: "stream-ok",
+    text: "使用队列媒体",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.layer, "active_stream");
+  assert.equal(deliverer.finishedStreams.length, 1);
+  assert.equal(deliverer.finishedStreams[0].content, "使用队列媒体");
+  assert.equal(deliverer.finishedStreams[0].options?.msgItem?.length, 1);
 });

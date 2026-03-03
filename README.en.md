@@ -46,7 +46,7 @@ OpenClaw-Wechat is an OpenClaw channel plugin for Enterprise WeChat (WeCom), wit
 | Default callback path | `/wecom/callback` | `/wecom/bot/callback` |
 | Reply mechanism | WeCom send APIs | stream response + refresh polling |
 | Streaming UX | simulated via multiple messages | native stream protocol |
-| Outbound media | full support (image/voice/video/file) | image/file supported (`response_url` mixed first, webhook fallback) |
+| Outbound media | full support (image/voice/video/file) | image/file supported (`active_stream msg_item(image)` first, then `response_url` mixed / webhook fallback) |
 
 ## 5-Minute Quick Start
 
@@ -294,6 +294,7 @@ npm run wecom:bot:selfcheck
 | Command | Purpose |
 |---|---|
 | `npm test` | syntax + tests |
+| `WECOM_E2E_ENABLE=1 npm run test:e2e:remote` | run remote E2E tests (skipped by default; requires `WECOM_E2E_BOT_URL`/`WECOM_E2E_AGENT_URL`) |
 | `npm run wecom:selfcheck -- --all-accounts` | config/network self-check |
 | `npm run wecom:agent:selfcheck -- --account <id>` | Agent E2E self-check (URL verify + encrypted POST) |
 | `npm run wecom:bot:selfcheck` | Bot E2E self-check (signature/encryption/stream-refresh) |
@@ -323,6 +324,13 @@ Quick checks:
 3. Proxy rules: route `/wecom/*` to OpenClaw gateway port, not WebUI.
 
 ### How to enable self-built app group chat without requiring `@`?
+First, separate the two WeCom integration types:
+1. **Webhook Bot**: can be added into normal WeCom groups directly (best for group chat).
+2. **Self-built App (Agent callback)**: plugin can handle group messages when WeCom callback includes `ChatId`, but whether normal group messages are delivered depends on WeCom tenant/product behavior.
+
+If your goal is stable normal-group conversations, prefer **Webhook Bot mode**.
+If your tenant does deliver group callbacks (`chatId=...` in logs), set:
+
 Set:
 
 ```json
@@ -341,5 +349,6 @@ Set:
 And verify WeCom-side prerequisites:
 1. App callback is enabled and URL verification succeeded.
 2. App visibility includes group members.
-3. The group contains your self-built app (not only a webhook bot).
-4. Logs contain inbound `chatId=...`; otherwise WeCom is not pushing group messages to this callback.
+3. Logs contain inbound `chatId=...`; otherwise WeCom is not pushing group messages to this callback.
+
+If your WeCom admin console only allows adding a webhook bot (not a self-built app) into regular groups, that is a WeCom-side product limitation rather than a plugin setting issue.

@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-03-03
+
+### Added
+- 新增 WeCom 插件依赖注入拆分模块：`plugin-processing-deps`、`plugin-route-runtime-deps`
+- 新增 active stream `msg_item` 构建独立模块：`src/wecom/outbound-stream-msg-item.js`
+- 新增与本轮拆分配套的单测覆盖（deps 工厂重导出、stream msg_item、媒体判型补充）
+- 新增远程 E2E 快捷命令说明：`WECOM_E2E_ENABLE=1 npm run test:e2e:remote`
+
+### Changed
+- WeCom 运行时组合层继续瘦身：`plugin-composition` 改为引用拆分后的 deps 模块
+- Bot 媒体目标判型逻辑统一到 `media-url-utils` 单一实现，避免多处实现漂移
+- 文档澄清自建应用与群机器人边界，明确普通群聊优先使用 Bot 模式
+
+### Fixed
+- 修复文档中“自建应用可直接加入普通群”的歧义描述，避免错误部署预期
+- 修复媒体类型推断规则不一致（`heic/heif/mkv` 支持差异）导致的回包行为偏差
+
 ## [0.5.3] - 2026-03-03
 
 ### Added

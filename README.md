@@ -108,7 +108,7 @@ npm run wecom:selfcheck -- --all-accounts
 | 图片发送（出站） | ✅ | Agent 模式支持 |
 | 语音/视频/文件发送（出站） | ✅ | 自动判型上传后发送（语音支持 AMR/SILK） |
 | 语音转写（本地） | ✅ | 企业微信 Recognition 优先，缺失时回退本地 whisper |
-| Bot 模式媒体回传 | ✅ | `response_url` 优先 mixed；Webhook Bot fallback 支持 image/file 回传（失败自动降级链接） |
+| Bot 模式媒体回传 | ✅ | `active_stream` 优先 `msg_item(image)`；失败自动降级媒体链接，`response_url`/Webhook Bot 继续兜底 |
 | Bot 文件入站 | ✅ | 支持 `msgtype=file` 下载并注入会话上下文 |
 | Bot 引用消息上下文 | ✅ | 自动将 `quote` 内容前置到本轮上下文 |
 
@@ -121,7 +121,7 @@ npm run wecom:selfcheck -- --all-accounts
 | 回调路径默认值 | `/wecom/callback` | `/wecom/bot/callback` |
 | 回复机制 | 主动调用 WeCom 发送 API | 回调响应 `stream` + 轮询刷新 |
 | 流式体验 | 多条消息模拟增量 | 原生 stream 协议 |
-| 出站媒体（图/语音/视频/文件） | 支持 | 支持（image/file 回传，video 自动按 file 回传） |
+| 出站媒体（图/语音/视频/文件） | 支持 | 支持（`active_stream msg_item(image)` + `response_url/Webhook` 回包，video 自动按 file 回传） |
 | 典型场景 | 标准企业应用、菜单/回调体系 | 对话机器人、连续流式问答 |
 
 ### 回调路径规划建议
@@ -504,6 +504,7 @@ npm run wecom:bot:selfcheck
 | 命令 | 作用 |
 |---|---|
 | `npm test` | 语法与单测 |
+| `WECOM_E2E_ENABLE=1 npm run test:e2e:remote` | 运行远程 E2E 测试（默认跳过，需配 `WECOM_E2E_BOT_URL`/`WECOM_E2E_AGENT_URL`） |
 | `npm run wecom:selfcheck -- --all-accounts` | 配置+网络体检 |
 | `npm run wecom:agent:selfcheck -- --account <id>` | Agent 端到端链路体检（URL 验证 + 加密 POST） |
 | `npm run wecom:bot:selfcheck` | Bot 端到端链路体检（签名/加密/stream-refresh） |
@@ -543,7 +544,12 @@ npm run wecom:bot:selfcheck
 3. 代理配置：为 `/wecom/*` 单独反代到 OpenClaw 网关端口，不要落到 WebUI 路由
 
 ### Q6：自建应用群聊怎么开？为什么群里不 @ 就不触发？
-插件已支持群聊 `direct/mention/keyword` 三种触发模式。若你希望“群里直接发就触发”，配置：
+先区分两种通道能力：
+1. **群机器人（Webhook Bot）**：可直接添加到企微群，天然适合群聊收发。
+2. **自建应用（Agent 回调）**：插件支持处理 `ChatId` 群消息；但是否能收到“普通群消息”取决于企业微信实际下发能力（很多租户里普通群只能加机器人，无法像成员一样加自建应用）。
+
+如果你的场景是“普通群里直接聊天并稳定触发”，优先用 **Webhook Bot 模式**。  
+如果你确认企业微信会把群消息回调到自建应用（日志里有 `chatId=...`），再配置触发模式：
 
 ```json
 {
@@ -561,8 +567,9 @@ npm run wecom:bot:selfcheck
 同时确认企业微信侧前提：
 1. 自建应用已开启“接收消息”并完成 URL 验证
 2. 应用可见范围包含该群成员
-3. 群里确实已添加该应用（不是只添加了另一个机器人）
-4. 日志里能看到 `chatId=...`（若没有 `chatId`，说明企业微信没有把群消息推送到该回调）
+3. 日志里能看到 `chatId=...`（若没有 `chatId`，说明企业微信没有把群消息推送到该回调）
+
+若你在企微侧只能给群添加“机器人”而不能添加“自建应用”，这不是插件配置问题，属于企微产品形态差异；建议走 Bot 模式承载群聊，自建应用用于私聊/应用会话/主动推送。
 
 ## 版本与贡献
 

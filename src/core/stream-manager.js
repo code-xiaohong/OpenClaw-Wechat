@@ -1,6 +1,7 @@
 const DEFAULT_STREAM_MAX_BYTES = 20480;
 const DEFAULT_STREAM_EXPIRE_MS = 10 * 60 * 1000;
 const DEFAULT_CLEANUP_INTERVAL_MS = 60 * 1000;
+const DEFAULT_STREAM_MSG_ITEM_LIMIT = 10;
 
 function normalizeStreamText(text) {
   return String(text ?? "");
@@ -17,6 +18,37 @@ function enforceUtf8ByteLimit(text, maxBytes = DEFAULT_STREAM_MAX_BYTES) {
 function normalizeSessionKey(sessionKey) {
   const normalized = String(sessionKey ?? "").trim();
   return normalized || "unknown";
+}
+
+function normalizeMediaType(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "image") return "image";
+  if (normalized === "video") return "video";
+  if (normalized === "voice" || normalized === "audio") return "voice";
+  if (normalized === "file") return "file";
+  return normalized;
+}
+
+function normalizeStreamMsgItems(msgItems, maxItems = DEFAULT_STREAM_MSG_ITEM_LIMIT) {
+  if (!Array.isArray(msgItems) || msgItems.length === 0) return [];
+  const limit = Number.isFinite(maxItems) && maxItems > 0 ? Math.floor(maxItems) : DEFAULT_STREAM_MSG_ITEM_LIMIT;
+  const normalized = [];
+  for (const rawItem of msgItems) {
+    if (!rawItem || typeof rawItem !== "object") continue;
+    const msgType = String(rawItem.msgtype ?? "").trim().toLowerCase();
+    if (msgType !== "image") continue;
+    const base64 = String(rawItem?.image?.base64 ?? "").trim();
+    const md5 = String(rawItem?.image?.md5 ?? "").trim().toLowerCase();
+    if (!base64) continue;
+    if (!/^[a-f0-9]{32}$/.test(md5)) continue;
+    normalized.push({
+      msgtype: "image",
+      image: { base64, md5 },
+    });
+    if (normalized.length >= limit) break;
+  }
+  return normalized;
 }
 
 export class WecomStreamManager {
@@ -43,6 +75,8 @@ export class WecomStreamManager {
       content,
       finished: false,
       feedbackId: String(feedbackId ?? "").trim() || null,
+      msgItem: [],
+      queuedMedia: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -50,7 +84,40 @@ export class WecomStreamManager {
     return stream;
   }
 
-  update(streamId, content, { append = false, finished = false } = {}) {
+  queueMedia(streamId, mediaUrl, { mediaType = "" } = {}) {
+    const id = String(streamId ?? "").trim();
+    const url = String(mediaUrl ?? "").trim();
+    if (!id || !url) return false;
+    const existing = this.streams.get(id);
+    if (!existing) return false;
+
+    const normalizedType = normalizeMediaType(mediaType);
+    const queued = Array.isArray(existing.queuedMedia) ? existing.queuedMedia : [];
+    const deduped = queued.filter((item) => String(item?.url ?? "").trim() !== url);
+    deduped.push({
+      url,
+      mediaType: normalizedType || undefined,
+      queuedAt: Date.now(),
+    });
+    existing.queuedMedia = deduped;
+    existing.updatedAt = Date.now();
+    this.streams.set(id, existing);
+    return true;
+  }
+
+  drainQueuedMedia(streamId) {
+    const id = String(streamId ?? "").trim();
+    if (!id) return [];
+    const existing = this.streams.get(id);
+    if (!existing) return [];
+    const queued = Array.isArray(existing.queuedMedia) ? existing.queuedMedia.slice() : [];
+    existing.queuedMedia = [];
+    existing.updatedAt = Date.now();
+    this.streams.set(id, existing);
+    return queued;
+  }
+
+  update(streamId, content, { append = false, finished = false, msgItem } = {}) {
     const id = String(streamId ?? "").trim();
     if (!id) return null;
     const existing = this.streams.get(id);
@@ -59,12 +126,15 @@ export class WecomStreamManager {
     const nextContent = append ? `${existing.content}${incoming}` : incoming;
     existing.content = enforceUtf8ByteLimit(nextContent, this.maxBytes);
     existing.finished = finished ? true : existing.finished;
+    if (Array.isArray(msgItem)) {
+      existing.msgItem = normalizeStreamMsgItems(msgItem);
+    }
     existing.updatedAt = Date.now();
     this.streams.set(id, existing);
     return existing;
   }
 
-  finish(streamId, content = null) {
+  finish(streamId, content = null, { msgItem } = {}) {
     const id = String(streamId ?? "").trim();
     if (!id) return null;
     const existing = this.streams.get(id);
@@ -72,6 +142,10 @@ export class WecomStreamManager {
     if (content != null) {
       existing.content = enforceUtf8ByteLimit(content, this.maxBytes);
     }
+    if (Array.isArray(msgItem)) {
+      existing.msgItem = normalizeStreamMsgItems(msgItem);
+    }
+    existing.queuedMedia = [];
     existing.finished = true;
     existing.updatedAt = Date.now();
     this.streams.set(id, existing);
