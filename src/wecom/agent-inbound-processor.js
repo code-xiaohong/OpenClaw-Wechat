@@ -1,6 +1,5 @@
-import { stat } from "node:fs/promises";
-
 import { buildWecomInboundContextPayload, buildWecomInboundEnvelopePayload } from "./agent-context.js";
+import { createWecomLateReplyWatcher } from "./agent-late-reply-watcher.js";
 import { createWecomAgentTextSender } from "./agent-text-sender.js";
 
 export function createWecomAgentInboundProcessor(deps = {}) {
@@ -40,6 +39,20 @@ export function createWecomAgentInboundProcessor(deps = {}) {
     scheduleTempFileCleanup,
     ACTIVE_LATE_REPLY_WATCHERS,
   } = deps;
+  let lateReplyWatcherRunner = null;
+  function ensureLateReplyWatcherRunner() {
+    if (lateReplyWatcherRunner) return lateReplyWatcherRunner;
+    lateReplyWatcherRunner = createWecomLateReplyWatcher({
+      resolveSessionTranscriptFilePath,
+      readTranscriptAppendedChunk,
+      parseLateAssistantReplyFromTranscriptLine,
+      hasTranscriptReplyBeenDelivered,
+      markTranscriptReplyDelivered,
+      sleep,
+      markdownToWecomText,
+    });
+    return lateReplyWatcherRunner;
+  }
 
   async function processInboundMessage({
   api,
@@ -388,84 +401,27 @@ export function createWecomAgentInboundProcessor(deps = {}) {
 
       const watchStartedAt = Date.now();
       const watchId = `${sessionId}:${msgId || watchStartedAt}:${Math.random().toString(36).slice(2, 8)}`;
-      ACTIVE_LATE_REPLY_WATCHERS.set(watchId, {
-        sessionId,
-        sessionKey: sessionId,
-        accountId: config.accountId || "default",
-        startedAt: watchStartedAt,
+      lateReplyWatcherPromise = ensureLateReplyWatcherRunner()({
+        watchId,
         reason,
+        sessionId,
+        sessionTranscriptId: ctxPayload.SessionId || sessionId,
+        accountId: config.accountId || "default",
+        storePath,
+        logger: api.logger,
+        watchStartedAt,
+        watchMs: lateReplyWatchMs,
+        pollMs: lateReplyPollMs,
+        activeWatchers: ACTIVE_LATE_REPLY_WATCHERS,
+        isDelivered: () => hasDeliveredReply,
+        markDelivered: () => {
+          hasDeliveredReply = true;
+        },
+        sendText: async (text) => sendTextToUser(text),
+        onFailureFallback: async (err) => sendFailureFallback(err),
+      }).finally(() => {
+        lateReplyWatcherPromise = null;
       });
-
-      lateReplyWatcherPromise = (async () => {
-        try {
-          const transcriptPath = await resolveSessionTranscriptFilePath({
-            storePath,
-            sessionKey: sessionId,
-            sessionId: ctxPayload.SessionId || sessionId,
-            logger: api.logger,
-          });
-          let offset = 0;
-          let remainder = "";
-          try {
-            const fileStat = await stat(transcriptPath);
-            offset = Number(fileStat.size ?? 0);
-          } catch {
-            offset = 0;
-          }
-
-          const deadline = watchStartedAt + lateReplyWatchMs;
-          api.logger.info?.(
-            `wecom: late reply watcher started session=${sessionId} reason=${reason} timeoutMs=${lateReplyWatchMs}`,
-          );
-
-          while (Date.now() < deadline) {
-            if (hasDeliveredReply) return;
-            await sleep(lateReplyPollMs);
-            if (hasDeliveredReply) return;
-
-            const { nextOffset, chunk } = await readTranscriptAppendedChunk(transcriptPath, offset);
-            offset = nextOffset;
-            if (!chunk) continue;
-
-            const combined = remainder + chunk;
-            const lines = combined.split("\n");
-            remainder = lines.pop() ?? "";
-
-            for (const line of lines) {
-              const parsed = parseLateAssistantReplyFromTranscriptLine(line, watchStartedAt);
-              if (!parsed) continue;
-              if (hasTranscriptReplyBeenDelivered(sessionId, parsed.transcriptMessageId)) continue;
-              if (hasDeliveredReply) return;
-
-              const formattedReply = markdownToWecomText(parsed.text);
-              if (!formattedReply) continue;
-
-              await sendTextToUser(formattedReply);
-              markTranscriptReplyDelivered(sessionId, parsed.transcriptMessageId);
-              hasDeliveredReply = true;
-              api.logger.info?.(
-                `wecom: delivered async late reply session=${sessionId} transcriptMessageId=${parsed.transcriptMessageId}`,
-              );
-              return;
-            }
-          }
-
-          if (!hasDeliveredReply) {
-            api.logger.warn?.(
-              `wecom: late reply watcher timed out session=${sessionId} timeoutMs=${lateReplyWatchMs}`,
-            );
-            await sendFailureFallback(`late reply watcher timed out after ${lateReplyWatchMs}ms`);
-          }
-        } catch (err) {
-          api.logger.warn?.(`wecom: late reply watcher failed: ${String(err?.message || err)}`);
-          if (!hasDeliveredReply) {
-            await sendFailureFallback(err);
-          }
-        } finally {
-          ACTIVE_LATE_REPLY_WATCHERS.delete(watchId);
-          lateReplyWatcherPromise = null;
-        }
-      })();
     };
 
     try {
