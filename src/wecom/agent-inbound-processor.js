@@ -1,3 +1,8 @@
+import { stat } from "node:fs/promises";
+
+import { buildWecomInboundContextPayload, buildWecomInboundEnvelopePayload } from "./agent-context.js";
+import { createWecomAgentTextSender } from "./agent-text-sender.js";
+
 export function createWecomAgentInboundProcessor(deps = {}) {
   const {
     getWecomConfig,
@@ -66,6 +71,15 @@ export function createWecomAgentInboundProcessor(deps = {}) {
   }
 
   const { corpId, corpSecret, agentId, outboundProxy: proxyUrl } = config;
+  const sendTextToUser = createWecomAgentTextSender({
+    sendWecomText,
+    corpId,
+    corpSecret,
+    agentId,
+    toUser: fromUser,
+    logger: api.logger,
+    proxyUrl,
+  });
 
   try {
     // 一用户一会话：群聊和私聊统一归并到 wecom:<userid>
@@ -113,15 +127,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
         `wecom: sender blocked by allowFrom account=${config.accountId || "default"} user=${normalizedFromUser}`,
       );
       if (allowFromPolicy.rejectMessage) {
-        await sendWecomText({
-          corpId,
-          corpSecret,
-          agentId,
-          toUser: fromUser,
-          text: allowFromPolicy.rejectMessage,
-          logger: api.logger,
-          proxyUrl,
-        });
+        await sendTextToUser(allowFromPolicy.rejectMessage);
       }
       return;
     }
@@ -140,15 +146,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
           (commandKey === "/reset" && commandPolicy.allowlist.includes("/clear"));
         if (commandPolicy.enabled && !isAdminUser && !commandAllowed) {
           api.logger.info?.(`wecom: command blocked by allowlist user=${fromUser} command=${commandKey}`);
-          await sendWecomText({
-            corpId,
-            corpSecret,
-            agentId,
-            toUser: fromUser,
-            text: commandPolicy.rejectMessage,
-            logger: api.logger,
-            proxyUrl,
-          });
+          await sendTextToUser(commandPolicy.rejectMessage);
           return;
         }
         const handler = COMMANDS[commandKey];
@@ -238,40 +236,34 @@ export function createWecomAgentInboundProcessor(deps = {}) {
 
     // 格式化消息体
     const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
-    const body = runtime.channel.reply.formatInboundEnvelope({
-      channel: "WeCom",
-      from: isGroupChat && chatId ? `${fromUser} (group:${chatId})` : fromUser,
-      timestamp: Date.now(),
-      body: messageText,
-      chatType: isGroupChat ? "group" : "direct",
-      sender: {
-        name: fromUser,
-        id: fromUser,
+    const body = runtime.channel.reply.formatInboundEnvelope(
+      {
+        ...buildWecomInboundEnvelopePayload({
+          fromUser,
+          chatId,
+          isGroupChat,
+          messageText,
+        }),
+        ...envelopeOptions,
       },
-      ...envelopeOptions,
-    });
+    );
 
     // 构建 Session 上下文对象
-    const ctxPayload = runtime.channel.reply.finalizeInboundContext({
-      Body: body,
-      BodyForAgent: messageText,
-      RawBody: originalContent,
-      CommandBody: commandBody,
-      From: fromAddress,
-      To: fromAddress,
-      SessionKey: sessionId,
-      AccountId: config.accountId || "default",
-      ChatType: isGroupChat ? "group" : "direct",
-      ConversationLabel: isGroupChat && chatId ? `group:${chatId}` : fromUser,
-      SenderName: fromUser,
-      SenderId: fromUser,
-      Provider: "wecom",
-      Surface: "wecom",
-      MessageSid: msgId || `wecom-${Date.now()}`,
-      Timestamp: Date.now(),
-      OriginatingChannel: "wecom",
-      OriginatingTo: fromAddress,
-    });
+    const ctxPayload = runtime.channel.reply.finalizeInboundContext(
+      buildWecomInboundContextPayload({
+        body,
+        messageText,
+        originalContent,
+        commandBody,
+        fromAddress,
+        sessionId,
+        accountId: config.accountId || "default",
+        isGroupChat,
+        chatId,
+        fromUser,
+        msgId,
+      }),
+    );
 
     // 注册会话到 Sessions UI
     await runtime.channel.session.recordInboundSession({
@@ -349,15 +341,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
       hasDeliveredPartialReply = true;
       streamChunkSendChain = streamChunkSendChain
         .then(async () => {
-          await sendWecomText({
-            corpId,
-            corpSecret,
-            agentId,
-            toUser: fromUser,
-            text: chunkText,
-            logger: api.logger,
-            proxyUrl,
-          });
+          await sendTextToUser(chunkText);
           streamChunkLastSentAt = Date.now();
           streamChunkSentCount += 1;
           api.logger.info?.(
@@ -391,29 +375,13 @@ export function createWecomAgentInboundProcessor(deps = {}) {
       if (!noticeText) return;
       if (hasDeliveredReply || hasDeliveredPartialReply || hasSentProgressNotice) return;
       hasSentProgressNotice = true;
-      await sendWecomText({
-        corpId,
-        corpSecret,
-        agentId,
-        toUser: fromUser,
-        text: noticeText,
-        logger: api.logger,
-        proxyUrl,
-      });
+      await sendTextToUser(noticeText);
     };
     const sendFailureFallback = async (reason) => {
       if (hasDeliveredReply) return;
       hasDeliveredReply = true;
       const reasonText = String(reason ?? "unknown").slice(0, 160);
-      await sendWecomText({
-        corpId,
-        corpSecret,
-        agentId,
-        toUser: fromUser,
-        text: `抱歉，当前模型请求超时或网络不稳定，请稍后重试。\n故障信息: ${reasonText}`,
-        logger: api.logger,
-        proxyUrl,
-      });
+      await sendTextToUser(`抱歉，当前模型请求超时或网络不稳定，请稍后重试。\n故障信息: ${reasonText}`);
     };
     const startLateReplyWatcher = async (reason = "pending-final") => {
       if (hasDeliveredReply || hasDeliveredPartialReply || lateReplyWatcherPromise) return;
@@ -472,15 +440,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
               const formattedReply = markdownToWecomText(parsed.text);
               if (!formattedReply) continue;
 
-              await sendWecomText({
-                corpId,
-                corpSecret,
-                agentId,
-                toUser: fromUser,
-                text: formattedReply,
-                logger: api.logger,
-                proxyUrl,
-              });
+              await sendTextToUser(formattedReply);
               markTranscriptReplyDelivered(sessionId, parsed.transcriptMessageId);
               hasDeliveredReply = true;
               api.logger.info?.(
@@ -566,15 +526,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
                         ? finalText.slice(streamedText.length).trim()
                         : "";
                     if (tailText) {
-                      await sendWecomText({
-                        corpId,
-                        corpSecret,
-                        agentId,
-                        toUser: fromUser,
-                        text: tailText,
-                        logger: api.logger,
-                        proxyUrl,
-                      });
+                      await sendTextToUser(tailText);
                     }
                     hasDeliveredReply = true;
                     deliveredFinalText = true;
@@ -611,15 +563,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
                     workspaceHints.push(`以下文件自动回传失败：\n${failedPreview}`);
                   }
                   const finalReplyText = [formattedReply, ...workspaceHints].filter(Boolean).join("\n\n");
-                  await sendWecomText({
-                    corpId,
-                    corpSecret,
-                    agentId,
-                    toUser: fromUser,
-                    text: finalReplyText,
-                    logger: api.logger,
-                    proxyUrl,
-                  });
+                  await sendTextToUser(finalReplyText);
                   hasDeliveredReply = true;
                   deliveredFinalText = true;
                   api.logger.info?.(`wecom: sent AI reply to ${fromUser}: ${finalReplyText.slice(0, 50)}...`);
@@ -642,26 +586,12 @@ export function createWecomAgentInboundProcessor(deps = {}) {
                   hasDeliveredReply = true;
                 }
                 if (mediaResult.failed.length > 0 && mediaResult.sentCount > 0) {
-                  await sendWecomText({
-                    corpId,
-                    corpSecret,
-                    agentId,
-                    toUser: fromUser,
-                    text: `已回传 ${mediaResult.sentCount} 个媒体，另有 ${mediaResult.failed.length} 个失败。`,
-                    logger: api.logger,
-                    proxyUrl,
-                  });
+                  await sendTextToUser(
+                    `已回传 ${mediaResult.sentCount} 个媒体，另有 ${mediaResult.failed.length} 个失败。`,
+                  );
                 }
                 if (mediaResult.sentCount === 0 && !deliveredFinalText) {
-                  await sendWecomText({
-                    corpId,
-                    corpSecret,
-                    agentId,
-                    toUser: fromUser,
-                    text: "已收到模型返回的媒体结果，但媒体回传失败，请稍后重试。",
-                    logger: api.logger,
-                    proxyUrl,
-                  });
+                  await sendTextToUser("已收到模型返回的媒体结果，但媒体回传失败，请稍后重试。");
                   hasDeliveredReply = true;
                 }
               }
@@ -701,15 +631,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
       if (!hasDeliveredReply && !hasDeliveredPartialReply) {
         const blockText = String(blockTextFallback || "").trim();
         if (blockText) {
-          await sendWecomText({
-            corpId,
-            corpSecret,
-            agentId,
-            toUser: fromUser,
-            text: markdownToWecomText(blockText),
-            logger: api.logger,
-            proxyUrl,
-          });
+          await sendTextToUser(markdownToWecomText(blockText));
           hasDeliveredReply = true;
           api.logger.info?.("wecom: delivered accumulated block reply as final fallback");
         }
@@ -756,15 +678,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
 
     // 发送错误提示给用户
     try {
-      await sendWecomText({
-        corpId,
-        corpSecret,
-        agentId,
-        toUser: fromUser,
-        text: `抱歉，处理您的消息时出现错误，请稍后重试。\n错误: ${err.message?.slice(0, 100) || "未知错误"}`,
-        logger: api.logger,
-        proxyUrl,
-      });
+      await sendTextToUser(`抱歉，处理您的消息时出现错误，请稍后重试。\n错误: ${err.message?.slice(0, 100) || "未知错误"}`);
     } catch (sendErr) {
       api.logger.error?.(`wecom: failed to send error message: ${sendErr.message}`);
       api.logger.error?.(`wecom: send error stack: ${sendErr.stack}`);
