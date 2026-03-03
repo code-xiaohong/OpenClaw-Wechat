@@ -35,6 +35,9 @@ All notable changes to this project will be documented in this file.
 - 账户配置发现/归一化逻辑从 `src/index.js` 拆分到 `src/wecom/account-config.js`，降低主文件复杂度
 - 文档补充两类高频问题排查：`/wecom/callback` 返回 WebUI 路由误配、群聊 direct 模式前置条件
 
+### Fixed
+- 修复 OpenClaw 2026.3+ 下 WeCom 回调路由注册失败（未显式声明 `registerHttpRoute.auth` 导致 webhook 404）
+
 ## [0.5.0] - 2026-03-02
 
 ### Added

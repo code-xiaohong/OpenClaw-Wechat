@@ -2376,6 +2376,7 @@ function registerWecomBotWebhookRoute(api) {
 
   api.registerHttpRoute({
     path: normalizedPath,
+    auth: "plugin",
     handler: async (req, res) => {
       try {
         const url = new URL(req.url ?? "/", "http://localhost");
@@ -2694,6 +2695,7 @@ export default function register(api) {
   for (const [normalizedPath, accounts] of webhookGroups.entries()) {
     api.registerHttpRoute({
       path: normalizedPath,
+      auth: "plugin",
       handler: async (req, res) => {
         try {
           const url = new URL(req.url ?? "/", "http://localhost");
