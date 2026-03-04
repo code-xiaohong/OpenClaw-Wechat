@@ -813,6 +813,7 @@ test("resolveWecomDynamicAgentConfig supports dynamicAgents and dm compatibility
           alice: "sales",
         },
       },
+      workspaceTemplate: "/tmp/wecom-template",
       dm: {
         createAgentOnFirstMessage: false,
       },
@@ -828,4 +829,5 @@ test("resolveWecomDynamicAgentConfig supports dynamicAgents and dm compatibility
   assert.equal(cfg.dmCreateAgent, false);
   assert.equal(cfg.groupEnabled, true);
   assert.equal(cfg.userMap.alice, "sales");
+  assert.equal(cfg.workspaceTemplate, "/tmp/wecom-template");
 });

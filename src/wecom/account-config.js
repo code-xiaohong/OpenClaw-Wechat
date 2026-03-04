@@ -28,6 +28,7 @@ const LEGACY_INLINE_ACCOUNT_RESERVED_KEYS = new Set([
   "commandAllowlist",
   "commandBlockMessage",
   "commands",
+  "workspaceTemplate",
   "groupChat",
   "dynamicAgent",
   "dynamicAgents",

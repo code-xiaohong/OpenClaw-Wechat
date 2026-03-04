@@ -74,6 +74,7 @@ const LEGACY_INLINE_ACCOUNT_RESERVED_KEYS = new Set([
   "commandAllowlist",
   "commandBlockMessage",
   "commands",
+  "workspaceTemplate",
   "groupChat",
   "dynamicAgent",
   "dynamicAgents",
@@ -943,6 +944,7 @@ export function resolveWecomDynamicAgentConfig({
   );
   const workspaceTemplate = pickFirstNonEmptyString(
     dynamicConfig.workspaceTemplate,
+    channelConfig?.workspaceTemplate,
     envVars?.WECOM_DYNAMIC_AGENT_WORKSPACE_TEMPLATE,
     processEnv?.WECOM_DYNAMIC_AGENT_WORKSPACE_TEMPLATE,
   );

@@ -13,7 +13,7 @@
     "type": "object",
     "additionalProperties": false,
     "patternProperties": {
-      "^(?!(enabled|corpId|corpSecret|agentId|callbackToken|token|callbackAesKey|encodingAesKey|webhookPath|agent|bot|delivery|webhookBot|stream|observability|outboundProxy|webhooks|allowFrom|allowFromRejectMessage|adminUsers|commandAllowlist|commandBlockMessage|commands|groupChat|dynamicAgent|dynamicAgents|dm|debounce|streaming|voiceTranscription|accounts)$)[A-Za-z0-9_-]+$": {
+      "^(?!(enabled|corpId|corpSecret|agentId|callbackToken|token|callbackAesKey|encodingAesKey|webhookPath|agent|bot|delivery|webhookBot|stream|observability|outboundProxy|webhooks|allowFrom|allowFromRejectMessage|adminUsers|commandAllowlist|commandBlockMessage|commands|workspaceTemplate|groupChat|dynamicAgent|dynamicAgents|dm|debounce|streaming|voiceTranscription|accounts)$)[A-Za-z0-9_-]+$": {
         "type": "object",
         "description": "兼容旧配置：inline 多账户（推荐迁移到 channels.wecom.accounts.<id>）"
       }
@@ -366,6 +366,10 @@
             "description": "命中未授权指令时返回给用户的提示文本"
           }
         }
+      },
+      "workspaceTemplate": {
+        "type": "string",
+        "description": "兼容旧配置：动态 Agent workspace 模板目录（等价 dynamicAgent.workspaceTemplate）"
       },
       "groupChat": {
         "type": "object",
