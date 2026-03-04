@@ -5,6 +5,8 @@ import { createWecomWebhookBotDeliverer } from "../src/wecom/outbound-webhook-de
 
 function createDeliverer(overrides = {}) {
   const textCalls = [];
+  const markdownCalls = [];
+  const templateCardCalls = [];
   const mediaCalls = [];
   const deliver = createWecomWebhookBotDeliverer({
     attachWecomProxyDispatcher: (_url, options) => options,
@@ -12,13 +14,19 @@ function createDeliverer(overrides = {}) {
     webhookSendText: async (payload) => {
       textCalls.push(payload);
     },
+    webhookSendMarkdown: async (payload) => {
+      markdownCalls.push(payload);
+    },
+    webhookSendTemplateCard: async (payload) => {
+      templateCardCalls.push(payload);
+    },
     sendWebhookBotMediaBatch: async (payload) => {
       mediaCalls.push(payload);
       return { sentCount: 0, failedCount: 0, failedUrls: [], reason: "ok" };
     },
     ...overrides,
   });
-  return { deliver, textCalls, mediaCalls };
+  return { deliver, textCalls, markdownCalls, templateCardCalls, mediaCalls };
 }
 
 test("deliverWebhookBotReply returns disabled when webhook bot is off", async () => {
@@ -92,4 +100,70 @@ test("deliverWebhookBotReply sends media and warning text for failed media", asy
   assert.equal(mediaCalls.length, 1);
   assert.equal(textCalls.length, 2);
   assert.match(textCalls[1].content, /以下媒体回传失败/);
+});
+
+test("deliverWebhookBotReply sends markdown card when card payload is provided", async () => {
+  const { deliver, textCalls, markdownCalls } = createDeliverer();
+  const result = await deliver({
+    api: { logger: { warn() {} } },
+    webhookBotPolicy: {
+      enabled: true,
+      url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+      key: "",
+      timeoutMs: 8000,
+    },
+    content: "hello",
+    fallbackText: "fallback",
+    normalizedText: "hello",
+    normalizedMediaUrls: [],
+    cardPolicy: {
+      enabled: true,
+      webhookBotEnabled: true,
+    },
+    cardPayload: {
+      msgtype: "markdown",
+      markdown: {
+        content: "### 标题\n\n正文",
+      },
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.meta.cardMode, "markdown");
+  assert.equal(markdownCalls.length, 1);
+  assert.equal(textCalls.length, 0);
+});
+
+test("deliverWebhookBotReply falls back to text when card send fails", async () => {
+  const { deliver, textCalls, markdownCalls } = createDeliverer({
+    webhookSendMarkdown: async () => {
+      throw new Error("card send failed");
+    },
+  });
+  const result = await deliver({
+    api: { logger: { warn() {} } },
+    webhookBotPolicy: {
+      enabled: true,
+      url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+      key: "",
+      timeoutMs: 8000,
+    },
+    content: "hello",
+    fallbackText: "fallback",
+    normalizedText: "hello",
+    normalizedMediaUrls: [],
+    cardPolicy: {
+      enabled: true,
+      webhookBotEnabled: true,
+    },
+    cardPayload: {
+      msgtype: "markdown",
+      markdown: {
+        content: "### 标题\n\n正文",
+      },
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(markdownCalls.length, 0);
+  assert.equal(textCalls.length, 1);
+  assert.equal(textCalls[0].content, "hello");
 });

@@ -56,5 +56,34 @@ test("deliverResponseUrlReply sends payload and marks used", async () => {
   assert.equal(result.meta.status, 200);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].responseUrl, "https://example.com/callback");
+  assert.equal(calls[0].payload?.msgtype, "text");
+  assert.equal(result.meta.msgtype, "text");
   assert.deepEqual(marks, ["wecom-bot:u1"]);
+});
+
+test("deliverResponseUrlReply prefers card payload when mixed payload is absent", async () => {
+  const calls = [];
+  const deliver = createWecomResponseUrlDeliverer({
+    sendWecomBotPayloadViaResponseUrl: async (payload) => {
+      calls.push(payload);
+      return { status: 200, errcode: 0 };
+    },
+    markBotResponseUrlUsed: () => {},
+  });
+  const result = await deliver({
+    sessionId: "wecom-bot:u1",
+    inlineResponseUrl: "https://example.com/callback",
+    cardPayload: {
+      msgtype: "markdown",
+      markdown: {
+        content: "### 卡片标题\n\n正文",
+      },
+    },
+    content: "hello",
+    fallbackText: "fallback",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.meta.msgtype, "markdown");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload?.msgtype, "markdown");
 });

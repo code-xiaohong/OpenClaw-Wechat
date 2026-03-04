@@ -16,6 +16,7 @@ function createHandlers(overrides = {}) {
     resolveWecomVoiceTranscriptionConfig: () => ({ enabled: true, provider: "local-whisper", model: "base", modelPath: "" }),
     resolveWecomCommandPolicy: () => ({ enabled: true, allowlist: ["/help"], adminUsers: ["u1"] }),
     resolveWecomAllowFromPolicy: () => ({ allowFrom: ["u1"] }),
+    resolveWecomDmPolicy: () => ({ mode: "open", allowFrom: [] }),
     resolveWecomGroupChatPolicy: () => ({ enabled: true, triggerMode: "mention", triggerKeywords: [] }),
     resolveWecomTextDebouncePolicy: () => ({ enabled: true, windowMs: 500, maxBatch: 3 }),
     resolveWecomReplyStreamingPolicy: () => ({ enabled: true, minChars: 40, minIntervalMs: 800 }),
@@ -24,6 +25,7 @@ function createHandlers(overrides = {}) {
     resolveWecomWebhookBotDeliveryPolicy: () => ({ enabled: true }),
     resolveWecomDynamicAgentPolicy: () => ({ enabled: true, mode: "manual", userMap: { u1: "main" }, groupMap: {} }),
     resolveWecomBotConfig: () => ({ webhookPath: "/wecom/bot/callback" }),
+    getWecomObservabilityMetrics: () => ({ inboundTotal: 3, deliveryTotal: 2, deliverySuccess: 2, deliveryFailed: 0, errorsTotal: 0 }),
     pluginVersion: "0.5.3",
     ...overrides,
   });

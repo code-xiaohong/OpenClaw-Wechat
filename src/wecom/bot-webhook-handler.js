@@ -24,6 +24,8 @@ export function createWecomBotWebhookHandler({
   processBotInboundMessage,
   deliverBotReplyText,
   finishBotStream,
+  recordInboundMetric = () => {},
+  recordRuntimeErrorMetric = () => {},
 } = {}) {
   const configuredBotConfigs = Array.isArray(botConfigs) && botConfigs.length > 0 ? botConfigs : [botConfig];
   const signedBotConfigs = configuredBotConfigs.filter((item) => item?.token && item?.encodingAesKey);
@@ -55,6 +57,8 @@ export function createWecomBotWebhookHandler({
     processBotInboundMessage,
     deliverBotReplyText,
     finishBotStream,
+    recordInboundMetric,
+    recordRuntimeErrorMetric,
     randomUuid: () => crypto.randomUUID?.(),
   });
 
@@ -183,6 +187,10 @@ export function createWecomBotWebhookHandler({
       res.end("success");
     } catch (err) {
       api.logger.error?.(`wecom(bot): webhook handler failed: ${String(err?.message || err)}`);
+      recordRuntimeErrorMetric({
+        scope: "bot-webhook",
+        reason: String(err?.message || err),
+      });
       if (!res.writableEnded) {
         res.statusCode = 500;
         res.setHeader("Content-Type", "text/plain; charset=utf-8");

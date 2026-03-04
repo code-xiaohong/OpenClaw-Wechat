@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- 新增 Bot 卡片回包能力：`channels.wecom.bot.card`（支持 `markdown` / `template_card`）
+- 新增卡片回包分层开关：`bot.card.responseUrlEnabled`、`bot.card.webhookBotEnabled`
+- 新增 `outbound-bot-card` 模块与回归测试，统一卡片 payload 构建与长度截断
 - 新增多账号冲突诊断：启动时输出 `wecom: account diagnosis ...`（重复 callbackToken / bot token、共享路径等）
 - 新增场景化远端 E2E 脚本：`npm run wecom:e2e:scenario -- --scenario <bot-smoke|agent-smoke|full-smoke|bot-queue>`
 - 新增账号路径诊断单测与默认路径单测（Agent/Bot）
@@ -39,6 +42,7 @@ All notable changes to this project will be documented in this file.
 - 新增 Bot 自检本地回调健康诊断：可识别 `html-fallback/route-not-found/gateway-unreachable` 并输出修复提示
 
 ### Changed
+- Bot 回包链路增强：当无媒体且卡片开启时，`response_url` / `webhook_bot` 优先发送卡片并自动降级文本
 - 多账号默认回调路径自动分配：
   - Agent：非 default 账户缺省为 `/wecom/<accountId>/callback`
   - Bot：非 default 账户缺省为 `/wecom/<accountId>/bot/callback`
@@ -47,6 +51,24 @@ All notable changes to this project will be documented in this file.
 - 动态路由增强：支持私聊/群聊维度开关（`dmCreateAgentOnFirstMessage`、`groupEnabled`）
 - 远端 E2E 兼容增强：`test:e2e:remote` 支持 `WECOM_E2E_*` 与 legacy `E2E_WECOM_*` 两套环境变量
 - 语法检查范围增强：`test:syntax` 从仅 `src` 扩展到 `src + scripts + tests`，降低脚本/测试回归漏检风险
+
+## [1.7.0] - 2026-03-05
+
+### Added
+- 新增私聊策略 `dm.mode`：支持 `open` / `allowlist` / `deny`，并支持账户级覆盖（`accounts.<id>.dm`）
+- 新增私聊策略环境变量：`WECOM_DM_POLICY|MODE`、`WECOM_DM_ALLOW_FROM`、`WECOM_DM_REJECT_MESSAGE`，并支持 `WECOM_<ACCOUNT>_DM_*` scoped 覆盖
+- 新增 WeCom 可观测指标存储：入站量、回包成功/失败、错误计数与最近失败样本
+- 新增 `/status` 观测输出：展示入站/回包统计、成功率和最近一次失败原因
+- 新增 Bot mixed 入站增强：支持 `file/link/location/voice` 子项解析与文件/语音链路接入
+- 新增测试覆盖：DM 策略解析/拦截、可观测统计、mixed 文件与语音解析、回包指标记录
+
+### Changed
+- Agent/Bot 入站守卫统一接入 DM 策略，按配置执行放行/拒绝
+- 回包编排链路统一埋点（active_stream / response_url / webhook_bot / agent_push）并上报最终状态
+- Bot 入站内容构建从“单类型”提升为“mixed 聚合”流程，支持同一条 mixed 消息中组合文件与语音内容
+
+### Fixed
+- 修复 Bot 入站执行流在新增 DM 策略依赖后的测试注入缺失问题（`resolveWecomDmPolicy is required`）
 
 ## [1.6.1] - 2026-03-04
 

@@ -9,6 +9,7 @@ export function createWecomCommandHandlers({
   resolveWecomVoiceTranscriptionConfig,
   resolveWecomCommandPolicy,
   resolveWecomAllowFromPolicy,
+  resolveWecomDmPolicy,
   resolveWecomGroupChatPolicy,
   resolveWecomTextDebouncePolicy,
   resolveWecomReplyStreamingPolicy,
@@ -17,6 +18,7 @@ export function createWecomCommandHandlers({
   resolveWecomWebhookBotDeliveryPolicy,
   resolveWecomDynamicAgentPolicy,
   resolveWecomBotConfig,
+  getWecomObservabilityMetrics = () => ({}),
   pluginVersion,
 } = {}) {
   if (typeof sendWecomText !== "function") throw new Error("createWecomCommandHandlers: sendWecomText is required");
@@ -36,6 +38,9 @@ export function createWecomCommandHandlers({
   }
   if (typeof resolveWecomAllowFromPolicy !== "function") {
     throw new Error("createWecomCommandHandlers: resolveWecomAllowFromPolicy is required");
+  }
+  if (typeof resolveWecomDmPolicy !== "function") {
+    throw new Error("createWecomCommandHandlers: resolveWecomDmPolicy is required");
   }
   if (typeof resolveWecomGroupChatPolicy !== "function") {
     throw new Error("createWecomCommandHandlers: resolveWecomGroupChatPolicy is required");
@@ -85,6 +90,7 @@ export function createWecomCommandHandlers({
     const voiceConfig = resolveWecomVoiceTranscriptionConfig(api);
     const commandPolicy = resolveWecomCommandPolicy(api);
     const allowFromPolicy = resolveWecomAllowFromPolicy(api, config?.accountId, config);
+    const dmPolicy = resolveWecomDmPolicy(api, config?.accountId, config);
     const groupPolicy = resolveWecomGroupChatPolicy(api);
     const debouncePolicy = resolveWecomTextDebouncePolicy(api);
     const streamingPolicy = resolveWecomReplyStreamingPolicy(api);
@@ -92,6 +98,7 @@ export function createWecomCommandHandlers({
     const streamManagerPolicy = resolveWecomStreamManagerPolicy(api);
     const webhookBotPolicy = resolveWecomWebhookBotDeliveryPolicy(api);
     const dynamicAgentPolicy = resolveWecomDynamicAgentPolicy(api);
+    const observabilityMetrics = getWecomObservabilityMetrics();
 
     const statusText = buildAgentStatusText({
       fromUser,
@@ -102,6 +109,7 @@ export function createWecomCommandHandlers({
       voiceConfig,
       commandPolicy,
       allowFromPolicy,
+      dmPolicy,
       groupPolicy,
       debouncePolicy,
       streamingPolicy,
@@ -109,6 +117,7 @@ export function createWecomCommandHandlers({
       streamManagerPolicy,
       webhookBotPolicy,
       dynamicAgentPolicy,
+      observabilityMetrics,
     });
 
     await sendWecomText({
@@ -127,12 +136,14 @@ export function createWecomCommandHandlers({
     const allWebhookTargetAliases = listAllWebhookTargetAliases(api);
     const commandPolicy = resolveWecomCommandPolicy(api);
     const allowFromPolicy = resolveWecomAllowFromPolicy(api, "default", {});
+    const dmPolicy = resolveWecomDmPolicy(api, "default", {});
     const groupPolicy = resolveWecomGroupChatPolicy(api);
     const botConfig = resolveWecomBotConfig(api);
     const deliveryFallbackPolicy = resolveWecomDeliveryFallbackPolicy(api);
     const streamManagerPolicy = resolveWecomStreamManagerPolicy(api);
     const webhookBotPolicy = resolveWecomWebhookBotDeliveryPolicy(api);
     const dynamicAgentPolicy = resolveWecomDynamicAgentPolicy(api);
+    const observabilityMetrics = getWecomObservabilityMetrics();
     return buildBotStatusText({
       fromUser,
       pluginVersion,
@@ -140,11 +151,13 @@ export function createWecomCommandHandlers({
       allWebhookTargetAliases,
       commandPolicy,
       allowFromPolicy,
+      dmPolicy,
       groupPolicy,
       deliveryFallbackPolicy,
       streamManagerPolicy,
       webhookBotPolicy,
       dynamicAgentPolicy,
+      observabilityMetrics,
     });
   }
 

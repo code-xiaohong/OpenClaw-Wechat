@@ -127,6 +127,34 @@ export function parseWecomBotInboundMessage(payload) {
           voiceContentType = voiceContentType || itemVoiceContentType;
           parts.push("[语音]");
         }
+      } else if (itemType === "file") {
+        const itemFileUrl = normalizeToken(
+          item?.file?.url ||
+            item?.file?.download_url ||
+            item?.file?.media_url ||
+            item?.file?.file_url,
+        );
+        const itemFileName = normalizeToken(item?.file?.name || item?.file?.filename);
+        if (itemFileUrl || itemFileName) {
+          fileUrl = fileUrl || itemFileUrl;
+          fileName = fileName || itemFileName;
+          const displayName = itemFileName || itemFileUrl || "附件";
+          parts.push(`[文件] ${displayName}`);
+        }
+      } else if (itemType === "link") {
+        const title = normalizeToken(item?.link?.title);
+        const description = normalizeToken(item?.link?.description);
+        const url = normalizeToken(item?.link?.url);
+        const linkText = [title ? `[链接] ${title}` : "", description, url].filter(Boolean).join("\n").trim();
+        if (linkText) parts.push(linkText);
+      } else if (itemType === "location") {
+        const latitude = normalizeToken(item?.location?.latitude);
+        const longitude = normalizeToken(item?.location?.longitude);
+        const name = normalizeToken(item?.location?.name || item?.location?.label);
+        const locationText = name ? `[位置] ${name} (${latitude}, ${longitude})` : `[位置] ${latitude}, ${longitude}`;
+        if (locationText.trim() !== "[位置] ,") {
+          parts.push(locationText);
+        }
       }
     }
     content = parts.join("\n").trim();

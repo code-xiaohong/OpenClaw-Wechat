@@ -52,8 +52,10 @@ test("applyWecomBotCommandAndSenderGuard blocks unauthorized sender", () => {
     msgType: "text",
     commandBody: "hello",
     normalizedFromUser: "u1",
+    isGroupChat: false,
     resolveWecomCommandPolicy: () => ({ enabled: true, adminUsers: [], allowlist: [], rejectMessage: "cmd blocked" }),
     resolveWecomAllowFromPolicy: () => ({ allowFrom: ["u2"], rejectMessage: "当前账号未授权，请联系管理员。" }),
+    resolveWecomDmPolicy: () => ({ mode: "open", allowFrom: [] }),
     isWecomSenderAllowed: ({ senderId, allowFrom }) => allowFrom.includes(senderId),
     extractLeadingSlashCommand: () => "",
     buildWecomBotHelpText: () => "help",
@@ -70,6 +72,7 @@ test("applyWecomBotCommandAndSenderGuard translates /clear to /reset", () => {
     msgType: "text",
     commandBody: "/clear now",
     normalizedFromUser: "u1",
+    isGroupChat: false,
     resolveWecomCommandPolicy: () => ({
       enabled: true,
       adminUsers: [],
@@ -77,6 +80,7 @@ test("applyWecomBotCommandAndSenderGuard translates /clear to /reset", () => {
       rejectMessage: "cmd blocked",
     }),
     resolveWecomAllowFromPolicy: () => ({ allowFrom: ["u1"], rejectMessage: "blocked" }),
+    resolveWecomDmPolicy: () => ({ mode: "open", allowFrom: [] }),
     isWecomSenderAllowed: ({ senderId, allowFrom }) => allowFrom.includes(senderId),
     extractLeadingSlashCommand: (text) => {
       if (text.startsWith("/clear")) return "/clear";
@@ -97,6 +101,7 @@ test("applyWecomBotCommandAndSenderGuard translates /new to /reset and allows /n
     msgType: "text",
     commandBody: "/new chat",
     normalizedFromUser: "u1",
+    isGroupChat: false,
     resolveWecomCommandPolicy: () => ({
       enabled: true,
       adminUsers: [],
@@ -104,6 +109,7 @@ test("applyWecomBotCommandAndSenderGuard translates /new to /reset and allows /n
       rejectMessage: "cmd blocked",
     }),
     resolveWecomAllowFromPolicy: () => ({ allowFrom: ["u1"], rejectMessage: "blocked" }),
+    resolveWecomDmPolicy: () => ({ mode: "open", allowFrom: [] }),
     isWecomSenderAllowed: ({ senderId, allowFrom }) => allowFrom.includes(senderId),
     extractLeadingSlashCommand: (text) => {
       if (text.startsWith("/new")) return "/new";
@@ -123,6 +129,7 @@ test("applyWecomBotCommandAndSenderGuard handles /help and /status directly", ()
     fromUser: "u1",
     msgType: "text",
     normalizedFromUser: "u1",
+    isGroupChat: false,
     resolveWecomCommandPolicy: () => ({
       enabled: true,
       adminUsers: [],
@@ -130,6 +137,7 @@ test("applyWecomBotCommandAndSenderGuard handles /help and /status directly", ()
       rejectMessage: "cmd blocked",
     }),
     resolveWecomAllowFromPolicy: () => ({ allowFrom: ["u1"], rejectMessage: "blocked" }),
+    resolveWecomDmPolicy: () => ({ mode: "open", allowFrom: [] }),
     isWecomSenderAllowed: ({ senderId, allowFrom }) => allowFrom.includes(senderId),
     buildWecomBotHelpText: () => "help text",
     buildWecomBotStatusText: () => "status text",
@@ -150,4 +158,24 @@ test("applyWecomBotCommandAndSenderGuard handles /help and /status directly", ()
   });
   assert.equal(statusResult.ok, false);
   assert.equal(statusResult.finishText, "status text");
+});
+
+test("applyWecomBotCommandAndSenderGuard blocks direct message when dm policy deny", () => {
+  const result = applyWecomBotCommandAndSenderGuard({
+    api: {},
+    fromUser: "u1",
+    isGroupChat: false,
+    msgType: "text",
+    commandBody: "hello",
+    normalizedFromUser: "u1",
+    resolveWecomCommandPolicy: () => ({ enabled: false, adminUsers: [], allowlist: [], rejectMessage: "cmd blocked" }),
+    resolveWecomAllowFromPolicy: () => ({ allowFrom: ["u1"], rejectMessage: "blocked" }),
+    resolveWecomDmPolicy: () => ({ mode: "deny", allowFrom: [], rejectMessage: "dm disabled" }),
+    isWecomSenderAllowed: ({ senderId, allowFrom }) => allowFrom.includes(senderId),
+    extractLeadingSlashCommand: () => "",
+    buildWecomBotHelpText: () => "help",
+    buildWecomBotStatusText: () => "status",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.finishText, "dm disabled");
 });

@@ -66,6 +66,32 @@ export async function webhookSendMarkdown({
   });
 }
 
+export async function webhookSendTemplateCard({
+  url,
+  key,
+  templateCard,
+  timeoutMs = 15000,
+  dispatcher,
+  fetchImpl = fetch,
+} = {}) {
+  const sendUrl = resolveWebhookBotSendUrl({ url, key });
+  if (!sendUrl) throw new Error("missing webhook bot url/key");
+  if (!templateCard || typeof templateCard !== "object") {
+    throw new Error("templateCard payload is required");
+  }
+  const body = {
+    msgtype: "template_card",
+    template_card: templateCard,
+  };
+  return postWebhookJson({
+    url: sendUrl,
+    body,
+    timeoutMs,
+    dispatcher,
+    fetchImpl,
+  });
+}
+
 export async function webhookSendImage({
   url,
   key,

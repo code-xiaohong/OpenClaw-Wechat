@@ -30,6 +30,11 @@ function createCommon(overrides = {}) {
       allowFrom: ["u1"],
       rejectMessage: "sender blocked",
     }),
+    resolveWecomDmPolicy: () => ({
+      mode: "open",
+      allowFrom: [],
+      rejectMessage: "dm blocked",
+    }),
     isWecomSenderAllowed: ({ senderId, allowFrom }) => allowFrom.includes(senderId),
     extractLeadingSlashCommand: () => "",
     COMMANDS: {},
@@ -141,4 +146,17 @@ test("applyWecomAgentInboundGuards blocks unallowed command for non-admin", asyn
   const result = await applyWecomAgentInboundGuards(input);
   assert.equal(result.ok, false);
   assert.deepEqual(sent, ["command denied"]);
+});
+
+test("applyWecomAgentInboundGuards blocks direct message when dm policy is deny", async () => {
+  const { input, sent } = createCommon({
+    resolveWecomDmPolicy: () => ({
+      mode: "deny",
+      allowFrom: [],
+      rejectMessage: "dm deny",
+    }),
+  });
+  const result = await applyWecomAgentInboundGuards(input);
+  assert.equal(result.ok, false);
+  assert.deepEqual(sent, ["dm deny"]);
 });

@@ -8,6 +8,42 @@ function buildWebhookTargetStatusLine({ aliases, scope = "当前账户", maxPrev
   return `✅ 命名 Webhook 目标（${scope}）：${preview}${suffix}`;
 }
 
+function buildDmPolicyStatusLine(dmPolicy = {}) {
+  const mode = String(dmPolicy?.mode ?? "open").trim().toLowerCase() || "open";
+  if (mode === "deny") {
+    return "⚠️ 私聊策略：已关闭（deny）";
+  }
+  if (mode === "allowlist") {
+    const count = Array.isArray(dmPolicy?.allowFrom) ? dmPolicy.allowFrom.length : 0;
+    return `✅ 私聊策略：白名单（${count} 个用户）`;
+  }
+  return "ℹ️ 私聊策略：开放（open）";
+}
+
+function buildObservabilityStatusLines(observabilityMetrics = {}) {
+  const inboundTotal = Number(observabilityMetrics?.inboundTotal || 0);
+  const deliveryTotal = Number(observabilityMetrics?.deliveryTotal || 0);
+  const deliverySuccess = Number(observabilityMetrics?.deliverySuccess || 0);
+  const deliveryFailed = Number(observabilityMetrics?.deliveryFailed || 0);
+  const errorsTotal = Number(observabilityMetrics?.errorsTotal || 0);
+  const successRate = deliveryTotal > 0 ? `${Math.round((deliverySuccess / deliveryTotal) * 100)}%` : "n/a";
+  const status = `📈 观测统计：入站 ${inboundTotal} / 回包 ${deliveryTotal}（成功 ${deliverySuccess}，失败 ${deliveryFailed}，成功率 ${successRate}） / 错误 ${errorsTotal}`;
+
+  const recent = Array.isArray(observabilityMetrics?.recentFailures)
+    ? observabilityMetrics.recentFailures.slice(-1)[0]
+    : null;
+  if (!recent) {
+    return {
+      status,
+      recent: "ℹ️ 最近失败：无",
+    };
+  }
+  return {
+    status,
+    recent: `⚠️ 最近失败：${recent.scope || "unknown"} ${recent.reason || "unknown"}`.slice(0, 140),
+  };
+}
+
 export function buildAgentStatusText({
   fromUser,
   config,
@@ -17,6 +53,7 @@ export function buildAgentStatusText({
   voiceConfig,
   commandPolicy,
   allowFromPolicy,
+  dmPolicy,
   groupPolicy,
   debouncePolicy,
   streamingPolicy,
@@ -24,6 +61,7 @@ export function buildAgentStatusText({
   streamManagerPolicy,
   webhookBotPolicy,
   dynamicAgentPolicy,
+  observabilityMetrics,
 } = {}) {
   const proxyEnabled = Boolean(config?.outboundProxy);
   const voiceStatusLine = voiceConfig.enabled
@@ -36,6 +74,7 @@ export function buildAgentStatusText({
     allowFromPolicy.allowFrom.length === 0 || allowFromPolicy.allowFrom.includes("*")
       ? "ℹ️ 发送者授权：未限制（allowFrom 未配置）"
       : `✅ 发送者授权：已限制 ${allowFromPolicy.allowFrom.length} 个用户`;
+  const dmPolicyLine = buildDmPolicyStatusLine(dmPolicy);
   const groupPolicyLine = groupPolicy.enabled
     ? groupPolicy.triggerMode === "mention"
       ? "✅ 群聊触发：仅 @ 命中后处理"
@@ -66,6 +105,7 @@ export function buildAgentStatusText({
     ? `✅ 动态 Agent 路由已启用（mode=${dynamicAgentPolicy.mode}，用户映射 ${Object.keys(dynamicAgentPolicy.userMap || {}).length}，群映射 ${Object.keys(dynamicAgentPolicy.groupMap || {}).length}）`
     : "ℹ️ 动态 Agent 路由未启用";
   const entryVisibilityLine = "✅ 微信插件入口联系人：Agent 模式可见（自建应用）";
+  const observabilityLines = buildObservabilityStatusLines(observabilityMetrics);
 
   return `📊 系统状态
 
@@ -85,6 +125,7 @@ export function buildAgentStatusText({
 ✅ 多账户支持
 ${commandPolicyLine}
 ${allowFromPolicyLine}
+${dmPolicyLine}
 ${groupPolicyLine}
 ${debouncePolicyLine}
 ${streamingPolicyLine}
@@ -95,7 +136,9 @@ ${webhookTargetsLine}
 ${dynamicAgentPolicyLine}
 ${entryVisibilityLine}
 ${proxyEnabled ? "✅ WeCom 出站代理已启用" : "ℹ️ WeCom 出站代理未启用"}
-${voiceStatusLine}`;
+${voiceStatusLine}
+${observabilityLines.status}
+${observabilityLines.recent}`;
 }
 
 export function buildBotStatusText({
@@ -105,11 +148,13 @@ export function buildBotStatusText({
   allWebhookTargetAliases,
   commandPolicy,
   allowFromPolicy,
+  dmPolicy,
   groupPolicy,
   deliveryFallbackPolicy,
   streamManagerPolicy,
   webhookBotPolicy,
   dynamicAgentPolicy,
+  observabilityMetrics,
 } = {}) {
   const commandPolicyLine = commandPolicy.enabled
     ? `✅ 指令白名单已启用（${commandPolicy.allowlist.length} 条，管理员 ${commandPolicy.adminUsers.length} 人）`
@@ -118,6 +163,7 @@ export function buildBotStatusText({
     allowFromPolicy.allowFrom.length === 0 || allowFromPolicy.allowFrom.includes("*")
       ? "ℹ️ 发送者授权：未限制（allowFrom 未配置）"
       : `✅ 发送者授权：已限制 ${allowFromPolicy.allowFrom.length} 个用户`;
+  const dmPolicyLine = buildDmPolicyStatusLine(dmPolicy);
   const groupPolicyLine = groupPolicy.enabled
     ? groupPolicy.triggerMode === "mention"
       ? "✅ 群聊触发：仅 @ 命中后处理"
@@ -142,6 +188,7 @@ export function buildBotStatusText({
     ? `✅ 动态 Agent 路由已启用（mode=${dynamicAgentPolicy.mode}，用户映射 ${Object.keys(dynamicAgentPolicy.userMap || {}).length}，群映射 ${Object.keys(dynamicAgentPolicy.groupMap || {}).length}）`
     : "ℹ️ 动态 Agent 路由未启用";
   const entryVisibilityLine = "ℹ️ 微信插件入口联系人：Bot 模式通常不显示（请通过机器人会话/群聊入口触发）";
+  const observabilityLines = buildObservabilityStatusLines(observabilityMetrics);
   return `📊 系统状态
 
 渠道：企业微信 AI 机器人 (Bot)
@@ -153,13 +200,16 @@ Bot Webhook：${botConfig.webhookPath}
 ✅ 原生流式回复（stream）
 ${commandPolicyLine}
 ${allowFromPolicyLine}
+${dmPolicyLine}
 ${groupPolicyLine}
 ${fallbackPolicyLine}
 ${streamManagerPolicyLine}
 ${webhookBotPolicyLine}
 ${webhookTargetsLine}
 ${dynamicAgentPolicyLine}
-${entryVisibilityLine}`;
+${entryVisibilityLine}
+${observabilityLines.status}
+${observabilityLines.recent}`;
 }
 
 export function buildWecomBotHelpText() {

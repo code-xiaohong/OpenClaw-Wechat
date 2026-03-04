@@ -30,11 +30,14 @@ OpenClaw-Wechat is an OpenClaw channel plugin for Enterprise WeChat (WeCom), wit
 | WeCom inbound message handling | ✅ | text/image/voice/link/file/video (Agent + Bot) |
 | AI auto-reply via OpenClaw runtime | ✅ | routed by session key |
 | Native WeCom Bot stream protocol | ✅ | `msgtype=stream` refresh flow |
+| Bot card replies | ✅ | `markdown/template_card` with automatic text fallback |
 | Multi-account support | ✅ | `channels.wecom.accounts.<id>` |
 | Sender allowlist and admin bypass | ✅ | `allowFrom` + `adminUsers` |
+| Direct-message policy | ✅ | `dm.mode=open/allowlist/deny` + account overrides |
 | Command allowlist | ✅ | `/help`, `/status`, `/clear`, `/new`, etc. |
 | Group trigger policy | ✅ | mention-required or direct-trigger |
 | Debounce and late-reply fallback | ✅ | better stability under queue/timeout |
+| Observability metrics | ✅ | inbound/delivery/error counters + recent failures |
 | Outbound proxy for WeCom APIs | ✅ | `outboundProxy` / `WECOM_PROXY` |
 
 ## Mode Comparison
@@ -161,6 +164,20 @@ Compat note: when default new paths are used, legacy aliases are auto-registered
 | `replyTimeoutMs` | integer | `90000` | Bot reply timeout (15s ~ 10m) |
 | `lateReplyWatchMs` | integer | `180000` | async late-reply watch window |
 | `lateReplyPollMs` | integer | `2000` | async late-reply poll interval |
+| `card` | object | see below | Bot card reply policy (`response_url` / `webhook_bot`) |
+
+#### Bot card config (`channels.wecom.bot.card`)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `false` | enable card replies |
+| `mode` | string | `markdown` | `markdown` (compat-first) or `template_card` |
+| `title` | string | `OpenClaw-Wechat` | card title |
+| `subtitle` | string | - | card subtitle |
+| `footer` | string | - | card footer text |
+| `maxContentLength` | integer | `1400` | max card body length (auto-truncated) |
+| `responseUrlEnabled` | boolean | `true` | enable card sending at `response_url` layer |
+| `webhookBotEnabled` | boolean | `true` | enable card sending at `webhook_bot` layer |
 
 ### Account-level Bot overrides (`channels.wecom.accounts.<id>.bot`)
 
@@ -177,6 +194,7 @@ When multi-account is enabled, each account can override Bot callback credential
 | `replyTimeoutMs` | integer | `90000` | model reply timeout |
 | `lateReplyWatchMs` | integer | `180000` | late-reply watch window |
 | `lateReplyPollMs` | integer | `2000` | late-reply poll interval |
+| `card` | object | - | account-level card policy (overrides global `bot.card`) |
 | `outboundProxy` / `proxyUrl` / `proxy` | string | - | account-level Bot proxy |
 
 ### Policy config
@@ -186,10 +204,12 @@ When multi-account is enabled, each account can override Bot callback credential
 | Sender ACL | `allowFrom`, `allowFromRejectMessage` |
 | Command ACL | `commands.enabled`, `commands.allowlist`, `commands.rejectMessage` |
 | Admin bypass | `adminUsers` |
+| Direct-message policy | `dm.mode`, `dm.allowFrom`, `dm.rejectMessage` |
 | Group trigger | `groupChat.enabled`, `groupChat.triggerMode`, `groupChat.mentionPatterns`, `groupChat.triggerKeywords` |
 | Dynamic route | `dynamicAgent.*` (compatible with `dynamicAgents.*`, `dm.createAgentOnFirstMessage`) |
 | Debounce | `debounce.enabled`, `debounce.windowMs`, `debounce.maxBatch` |
 | Agent streaming | `streaming.enabled`, `streaming.minChars`, `streaming.minIntervalMs` |
+| Observability | `observability.enabled`, `observability.logPayloadMeta` |
 
 ## Capability Matrix
 
@@ -262,6 +282,14 @@ Outbound target formats:
 | `WECOM_BOT_REPLY_TIMEOUT_MS` | Bot reply timeout |
 | `WECOM_BOT_LATE_REPLY_WATCH_MS` | Bot late-reply watch window |
 | `WECOM_BOT_LATE_REPLY_POLL_MS` | Bot late-reply poll interval |
+| `WECOM_BOT_CARD_ENABLED` | enable Bot card replies |
+| `WECOM_BOT_CARD_MODE` | card mode: `markdown` / `template_card` |
+| `WECOM_BOT_CARD_TITLE` | card title |
+| `WECOM_BOT_CARD_SUBTITLE` | card subtitle |
+| `WECOM_BOT_CARD_FOOTER` | card footer text |
+| `WECOM_BOT_CARD_MAX_CONTENT_LENGTH` | max card body length |
+| `WECOM_BOT_CARD_RESPONSE_URL_ENABLED` | card switch for response_url layer |
+| `WECOM_BOT_CARD_WEBHOOK_BOT_ENABLED` | card switch for webhook_bot layer |
 | `WECOM_<ACCOUNT>_BOT_*` | account-level Bot override (e.g. `WECOM_SALES_BOT_TOKEN`) |
 | `WECOM_<ACCOUNT>_BOT_PROXY` | account-level Bot proxy for media/download/reply |
 
@@ -271,10 +299,12 @@ Outbound target formats:
 |---|---|
 | `WECOM_ALLOW_FROM*` | sender authorization |
 | `WECOM_COMMANDS_*` | command ACL |
+| `WECOM_DM_*`, `WECOM_<ACCOUNT>_DM_*` | DM policy + allowlist |
 | `WECOM_GROUP_CHAT_*` | group trigger policy |
 | `WECOM_DEBOUNCE_*` | text debounce |
 | `WECOM_STREAMING_*` | Agent incremental output |
 | `WECOM_LATE_REPLY_*` | async late reply fallback |
+| `WECOM_OBSERVABILITY_ENABLED`, `WECOM_OBSERVABILITY_PAYLOAD_META` | observability counters and payload-meta logging |
 | `WECOM_PROXY`, `WECOM_<ACCOUNT>_PROXY` | outbound proxy |
 
 ### Local voice transcription fallback

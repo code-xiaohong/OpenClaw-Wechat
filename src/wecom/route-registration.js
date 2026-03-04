@@ -37,6 +37,8 @@ export function createWecomRouteRegistrar({
   deliverBotReplyText,
   finishBotStream,
   groupAccountsByWebhookPath,
+  recordInboundMetric = () => {},
+  recordRuntimeErrorMetric = () => {},
 } = {}) {
   if (typeof resolveWecomBotConfig !== "function") throw new Error("createWecomRouteRegistrar: resolveWecomBotConfig is required");
   if (typeof resolveWecomBotConfigs !== "function") {
@@ -145,6 +147,8 @@ export function createWecomRouteRegistrar({
         processBotInboundMessage,
         deliverBotReplyText,
         finishBotStream,
+        recordInboundMetric,
+        recordRuntimeErrorMetric,
       });
 
       api.registerHttpRoute({
@@ -241,6 +245,8 @@ export function createWecomRouteRegistrar({
         messageProcessLimiter,
         executeInboundTaskWithSessionQueue,
         processInboundMessage,
+        recordInboundMetric,
+        recordRuntimeErrorMetric,
       });
       api.registerHttpRoute({
         path: normalizedPath,

@@ -8,12 +8,16 @@ export function createWecomWebhookBotDeliverer({
   attachWecomProxyDispatcher,
   resolveWebhookBotSendUrl,
   webhookSendText,
+  webhookSendMarkdown,
+  webhookSendTemplateCard,
   sendWebhookBotMediaBatch,
   fetchImpl = fetch,
 } = {}) {
   assertFunction("attachWecomProxyDispatcher", attachWecomProxyDispatcher);
   assertFunction("resolveWebhookBotSendUrl", resolveWebhookBotSendUrl);
   assertFunction("webhookSendText", webhookSendText);
+  assertFunction("webhookSendMarkdown", webhookSendMarkdown);
+  assertFunction("webhookSendTemplateCard", webhookSendTemplateCard);
   assertFunction("sendWebhookBotMediaBatch", sendWebhookBotMediaBatch);
   assertFunction("fetchImpl", fetchImpl);
 
@@ -26,6 +30,8 @@ export function createWecomWebhookBotDeliverer({
     normalizedText = "",
     normalizedMediaUrls = [],
     mediaType,
+    cardPayload = null,
+    cardPolicy = {},
   } = {}) {
     if (!webhookBotPolicy?.enabled) {
       return { ok: false, reason: "webhook-bot-disabled" };
@@ -41,8 +47,42 @@ export function createWecomWebhookBotDeliverer({
     const dispatcher = attachWecomProxyDispatcher(sendUrl, {}, { proxyUrl: botProxyUrl, logger: api?.logger })?.dispatcher;
     const textPayload = `${content || fallbackText}`.trim();
     let sentAny = false;
+    let usedCardMode = "";
 
-    if (textPayload && (normalizedText || normalizedMediaUrls.length === 0)) {
+    const cardEnabledForWebhook = cardPolicy?.enabled === true && cardPolicy?.webhookBotEnabled !== false;
+    const canTryCard = cardEnabledForWebhook && normalizedMediaUrls.length === 0 && cardPayload && typeof cardPayload === "object";
+    if (canTryCard) {
+      try {
+        const cardMsgType = String(cardPayload?.msgtype ?? "").trim().toLowerCase();
+        if (cardMsgType === "template_card" && cardPayload?.template_card) {
+          await webhookSendTemplateCard({
+            url: webhookBotPolicy?.url,
+            key: webhookBotPolicy?.key,
+            templateCard: cardPayload.template_card,
+            timeoutMs: webhookBotPolicy?.timeoutMs,
+            dispatcher,
+            fetchImpl,
+          });
+          sentAny = true;
+          usedCardMode = "template_card";
+        } else if (cardMsgType === "markdown" && cardPayload?.markdown?.content) {
+          await webhookSendMarkdown({
+            url: webhookBotPolicy?.url,
+            key: webhookBotPolicy?.key,
+            content: String(cardPayload.markdown.content ?? ""),
+            timeoutMs: webhookBotPolicy?.timeoutMs,
+            dispatcher,
+            fetchImpl,
+          });
+          sentAny = true;
+          usedCardMode = "markdown";
+        }
+      } catch (err) {
+        api?.logger?.warn?.(`wecom: webhook bot card send failed, fallback to text: ${String(err?.message || err)}`);
+      }
+    }
+
+    if (!sentAny && textPayload && (normalizedText || normalizedMediaUrls.length === 0)) {
       await webhookSendText({
         url: webhookBotPolicy?.url,
         key: webhookBotPolicy?.key,
@@ -86,6 +126,7 @@ export function createWecomWebhookBotDeliverer({
       meta: {
         mediaSent: mediaMeta.sentCount,
         mediaFailed: mediaMeta.failedCount,
+        cardMode: usedCardMode || undefined,
       },
     };
   };

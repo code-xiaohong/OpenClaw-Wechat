@@ -20,6 +20,7 @@ export async function applyWecomAgentInboundGuards({
   stripWecomGroupMentions,
   resolveWecomCommandPolicy,
   resolveWecomAllowFromPolicy,
+  resolveWecomDmPolicy,
   isWecomSenderAllowed,
   extractLeadingSlashCommand,
   COMMANDS,
@@ -31,6 +32,7 @@ export async function applyWecomAgentInboundGuards({
   assertFunction("stripWecomGroupMentions", stripWecomGroupMentions);
   assertFunction("resolveWecomCommandPolicy", resolveWecomCommandPolicy);
   assertFunction("resolveWecomAllowFromPolicy", resolveWecomAllowFromPolicy);
+  assertFunction("resolveWecomDmPolicy", resolveWecomDmPolicy);
   assertFunction("isWecomSenderAllowed", isWecomSenderAllowed);
   assertFunction("extractLeadingSlashCommand", extractLeadingSlashCommand);
   assertFunction("sendTextToUser", sendTextToUser);
@@ -59,6 +61,23 @@ export async function applyWecomAgentInboundGuards({
 
   const commandPolicy = resolveWecomCommandPolicy(api);
   const isAdminUser = commandPolicy.adminUsers.includes(normalizedFromUser);
+  const dmPolicy = resolveWecomDmPolicy(api, config?.accountId || accountId || "default", config);
+  if (!isGroupChat) {
+    if (dmPolicy.mode === "deny") {
+      await sendTextToUser(dmPolicy.rejectMessage || "当前渠道私聊已关闭，请联系管理员。");
+      return { ok: false, commandBody: nextCommandBody, isAdminUser };
+    }
+    if (dmPolicy.mode === "allowlist") {
+      const dmSenderAllowed = isAdminUser || isWecomSenderAllowed({
+        senderId: normalizedFromUser,
+        allowFrom: dmPolicy.allowFrom,
+      });
+      if (!dmSenderAllowed) {
+        await sendTextToUser(dmPolicy.rejectMessage || "当前私聊账号未授权，请联系管理员。");
+        return { ok: false, commandBody: nextCommandBody, isAdminUser };
+      }
+    }
+  }
   const allowFromPolicy = resolveWecomAllowFromPolicy(api, config?.accountId || accountId || "default", config);
   const senderAllowed = isAdminUser || isWecomSenderAllowed({
     senderId: normalizedFromUser,

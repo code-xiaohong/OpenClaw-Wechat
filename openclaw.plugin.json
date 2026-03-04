@@ -1,7 +1,7 @@
 {
   "id": "openclaw-wechat",
   "name": "OpenClaw-Wechat",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "WeCom (企业微信) channel plugin for OpenClaw (自建应用回调 + 发送 API).",
   "channels": [
     "wecom"
@@ -186,6 +186,56 @@
             "maximum": 10000,
             "default": 2000,
             "description": "Bot 异步补发轮询间隔（毫秒）"
+          },
+          "card": {
+            "type": "object",
+            "description": "Bot 卡片回包策略（response_url / webhook_bot）",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "是否启用 Bot 卡片回包（默认关闭，保持兼容）"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "markdown",
+                  "template_card"
+                ],
+                "default": "markdown",
+                "description": "卡片模式：markdown（兼容优先）/ template_card（模板卡片）"
+              },
+              "title": {
+                "type": "string",
+                "description": "卡片标题"
+              },
+              "subtitle": {
+                "type": "string",
+                "description": "卡片副标题"
+              },
+              "footer": {
+                "type": "string",
+                "description": "卡片底部说明"
+              },
+              "maxContentLength": {
+                "type": "integer",
+                "minimum": 200,
+                "maximum": 4000,
+                "default": 1400,
+                "description": "卡片正文最大长度（超出自动截断）"
+              },
+              "responseUrlEnabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "是否在 response_url 层启用卡片发送"
+              },
+              "webhookBotEnabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "是否在 webhook_bot 层启用卡片发送"
+              }
+            }
           }
         }
       },
@@ -543,9 +593,23 @@
       },
       "dm": {
         "type": "object",
-        "description": "兼容旧配置：私聊动态 Agent 开关",
+        "description": "私聊策略与兼容配置",
         "additionalProperties": false,
         "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "open",
+              "allowlist",
+              "deny"
+            ],
+            "default": "open",
+            "description": "私聊策略：open=开放，allowlist=白名单，deny=关闭"
+          },
+          "rejectMessage": {
+            "type": "string",
+            "description": "私聊被拒绝时的提示文案"
+          },
           "createAgentOnFirstMessage": {
             "type": "boolean",
             "default": true,
@@ -553,7 +617,7 @@
           },
           "allowFrom": {
             "type": "array",
-            "description": "兼容旧配置：私聊发送者允许列表（优先级同 allowFrom）",
+            "description": "私聊白名单（mode=allowlist 时生效）",
             "items": {
               "type": "string",
               "minLength": 1
@@ -874,6 +938,56 @@
                   "default": 2000,
                   "description": "Bot 异步补发轮询间隔（毫秒）"
                 },
+                "card": {
+                  "type": "object",
+                  "description": "该账户 Bot 卡片回包策略（覆盖 channels.wecom.bot.card）",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "是否启用该账户 Bot 卡片回包"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "markdown",
+                        "template_card"
+                      ],
+                      "default": "markdown",
+                      "description": "卡片模式：markdown / template_card"
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "卡片标题"
+                    },
+                    "subtitle": {
+                      "type": "string",
+                      "description": "卡片副标题"
+                    },
+                    "footer": {
+                      "type": "string",
+                      "description": "卡片底部说明"
+                    },
+                    "maxContentLength": {
+                      "type": "integer",
+                      "minimum": 200,
+                      "maximum": 4000,
+                      "default": 1400,
+                      "description": "卡片正文最大长度（超出自动截断）"
+                    },
+                    "responseUrlEnabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "是否在 response_url 层启用卡片发送"
+                    },
+                    "webhookBotEnabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "是否在 webhook_bot 层启用卡片发送"
+                    }
+                  }
+                },
                 "outboundProxy": {
                   "type": "string",
                   "description": "可选：该账户 Bot 回调媒体下载/回包专用代理（覆盖 channels.wecom.bot/outboundProxy）"
@@ -911,6 +1025,35 @@
             "allowFromRejectMessage": {
               "type": "string",
               "description": "可选：该账户发送者未授权时的拒绝文案（覆盖 channels.wecom.allowFromRejectMessage）"
+            },
+            "dm": {
+              "type": "object",
+              "description": "可选：该账户私聊策略（覆盖 channels.wecom.dm）",
+              "additionalProperties": false,
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "open",
+                    "allowlist",
+                    "deny"
+                  ],
+                  "default": "open",
+                  "description": "私聊策略：open=开放，allowlist=白名单，deny=关闭"
+                },
+                "allowFrom": {
+                  "type": "array",
+                  "description": "私聊白名单（mode=allowlist 时生效）",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "rejectMessage": {
+                  "type": "string",
+                  "description": "私聊被拒绝时的提示文案"
+                }
+              }
             }
           }
         }

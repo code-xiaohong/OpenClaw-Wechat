@@ -48,9 +48,12 @@ const DEFAULT_DELIVERY_FALLBACK_ORDER = Object.freeze([
   "webhook_bot",
   "agent_push",
 ]);
+const DEFAULT_BOT_CARD_MODE = "markdown";
+const BOT_CARD_MODE_SET = new Set(["markdown", "template_card"]);
 const DELIVERY_FALLBACK_LAYER_SET = new Set(DEFAULT_DELIVERY_FALLBACK_ORDER);
 const DYNAMIC_AGENT_MAP_SPLITTER = /[,\n]/;
 const GROUP_CHAT_TRIGGER_MODE_SET = new Set(["direct", "mention", "keyword"]);
+const DM_POLICY_MODE_SET = new Set(["open", "allowlist", "deny"]);
 const DYNAMIC_AGENT_MODE_SET = new Set(["mapping", "deterministic", "hybrid"]);
 const DYNAMIC_AGENT_ID_STRATEGY_SET = new Set(["readable-hash"]);
 const LEGACY_INLINE_ACCOUNT_RESERVED_KEYS = new Set([
@@ -276,6 +279,45 @@ function readAllowFromRejectMessageEnv(envVars, processEnv, accountId = "default
   );
 }
 
+function readDmPolicyModeEnv(envVars, processEnv, accountId = "default") {
+  const normalizedId = normalizeAccountIdForEnv(accountId);
+  const scopedDmPolicyKey = normalizedId === "default" ? null : `WECOM_${normalizedId.toUpperCase()}_DM_POLICY`;
+  const scopedDmModeKey = normalizedId === "default" ? null : `WECOM_${normalizedId.toUpperCase()}_DM_MODE`;
+  return pickFirstNonEmptyString(
+    scopedDmPolicyKey ? envVars?.[scopedDmPolicyKey] : undefined,
+    scopedDmPolicyKey ? processEnv?.[scopedDmPolicyKey] : undefined,
+    scopedDmModeKey ? envVars?.[scopedDmModeKey] : undefined,
+    scopedDmModeKey ? processEnv?.[scopedDmModeKey] : undefined,
+    envVars?.WECOM_DM_POLICY,
+    processEnv?.WECOM_DM_POLICY,
+    envVars?.WECOM_DM_MODE,
+    processEnv?.WECOM_DM_MODE,
+  );
+}
+
+function readDmAllowFromEnv(envVars, processEnv, accountId = "default") {
+  const normalizedId = normalizeAccountIdForEnv(accountId);
+  const scopedAllowFromKey = normalizedId === "default" ? null : `WECOM_${normalizedId.toUpperCase()}_DM_ALLOW_FROM`;
+  const scoped = parseStringList(
+    scopedAllowFromKey ? envVars?.[scopedAllowFromKey] : undefined,
+    scopedAllowFromKey ? processEnv?.[scopedAllowFromKey] : undefined,
+  );
+  if (scoped.length > 0) return scoped;
+  return parseStringList(envVars?.WECOM_DM_ALLOW_FROM, processEnv?.WECOM_DM_ALLOW_FROM);
+}
+
+function readDmRejectMessageEnv(envVars, processEnv, accountId = "default") {
+  const normalizedId = normalizeAccountIdForEnv(accountId);
+  const scopedRejectMessageKey =
+    normalizedId === "default" ? null : `WECOM_${normalizedId.toUpperCase()}_DM_REJECT_MESSAGE`;
+  return pickFirstNonEmptyString(
+    scopedRejectMessageKey ? envVars?.[scopedRejectMessageKey] : undefined,
+    scopedRejectMessageKey ? processEnv?.[scopedRejectMessageKey] : undefined,
+    envVars?.WECOM_DM_REJECT_MESSAGE,
+    processEnv?.WECOM_DM_REJECT_MESSAGE,
+  );
+}
+
 function readProxyEnv(envVars, processEnv, accountId = "default") {
   const normalizedId = normalizeAccountIdForEnv(accountId);
   const scopedProxyKey = normalizedId === "default" ? null : `WECOM_${normalizedId.toUpperCase()}_PROXY`;
@@ -452,6 +494,27 @@ function uniqueDeliveryFallbackOrder(values) {
     deduped.push(normalized);
   }
   return deduped;
+}
+
+function normalizeWecomBotCardMode(value, fallback = DEFAULT_BOT_CARD_MODE) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === "template-card" || normalized === "templatecard") return "template_card";
+  if (BOT_CARD_MODE_SET.has(normalized)) return normalized;
+  return fallback;
+}
+
+function normalizeWecomDmPolicyMode(value, fallback = "open") {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === "closed" || normalized === "close") return "deny";
+  if (normalized === "whitelist") return "allowlist";
+  if (DM_POLICY_MODE_SET.has(normalized)) return normalized;
+  return fallback;
 }
 
 export function normalizeWecomAllowFromEntry(raw) {
@@ -670,6 +733,47 @@ export function resolveWecomAllowFromPolicyConfig({
   return {
     allowFrom,
     rejectMessage,
+  };
+}
+
+export function resolveWecomDmPolicyConfig({
+  channelConfig = {},
+  accountConfig = {},
+  envVars = {},
+  processEnv = process.env,
+  accountId = "default",
+} = {}) {
+  const channelDmConfig = channelConfig?.dm && typeof channelConfig.dm === "object" ? channelConfig.dm : {};
+  const accountDmConfig = accountConfig?.dm && typeof accountConfig.dm === "object" ? accountConfig.dm : {};
+  const mode = normalizeWecomDmPolicyMode(
+    pickFirstNonEmptyString(
+      accountDmConfig.mode,
+      channelDmConfig.mode,
+      readDmPolicyModeEnv(envVars, processEnv, accountId),
+      "open",
+    ),
+  );
+  const allowFrom = uniqueAllowFromList(
+    parseStringList(
+      accountDmConfig.allowFrom,
+      channelDmConfig.allowFrom,
+      readDmAllowFromEnv(envVars, processEnv, accountId),
+    ),
+  );
+  const rejectMessage = pickFirstNonEmptyString(
+    accountDmConfig.rejectMessage,
+    accountDmConfig.blockMessage,
+    channelDmConfig.rejectMessage,
+    channelDmConfig.blockMessage,
+    readDmRejectMessageEnv(envVars, processEnv, accountId),
+    mode === "deny" ? "当前渠道私聊已关闭，请联系管理员。" : "当前私聊账号未授权，请联系管理员。",
+  );
+  const effectiveMode = mode === "allowlist" && allowFrom.length === 0 ? "deny" : mode;
+  return {
+    mode: effectiveMode,
+    allowFrom,
+    rejectMessage,
+    enabled: effectiveMode !== "open" || allowFrom.length > 0,
   };
 }
 
@@ -1182,6 +1286,79 @@ export function resolveWecomObservabilityConfig({
   };
 }
 
+export function resolveWecomBotCardConfig({
+  botConfig = {},
+  envVars = {},
+  processEnv = process.env,
+} = {}) {
+  const cardConfig = botConfig?.card && typeof botConfig.card === "object" ? botConfig.card : {};
+  const enabled = parseBooleanLike(
+    cardConfig.enabled,
+    parseBooleanLike(
+      envVars?.WECOM_BOT_CARD_ENABLED,
+      parseBooleanLike(processEnv?.WECOM_BOT_CARD_ENABLED, false),
+    ),
+  );
+  const mode = normalizeWecomBotCardMode(
+    pickFirstNonEmptyString(
+      cardConfig.mode,
+      envVars?.WECOM_BOT_CARD_MODE,
+      processEnv?.WECOM_BOT_CARD_MODE,
+      DEFAULT_BOT_CARD_MODE,
+    ),
+  );
+  const title = pickFirstNonEmptyString(
+    cardConfig.title,
+    envVars?.WECOM_BOT_CARD_TITLE,
+    processEnv?.WECOM_BOT_CARD_TITLE,
+    "OpenClaw-Wechat",
+  );
+  const subtitle = pickFirstNonEmptyString(
+    cardConfig.subtitle,
+    cardConfig.subTitle,
+    envVars?.WECOM_BOT_CARD_SUBTITLE,
+    processEnv?.WECOM_BOT_CARD_SUBTITLE,
+  );
+  const footer = pickFirstNonEmptyString(
+    cardConfig.footer,
+    envVars?.WECOM_BOT_CARD_FOOTER,
+    processEnv?.WECOM_BOT_CARD_FOOTER,
+  );
+  const maxContentLength = asBoundedPositiveInteger(
+    cardConfig.maxContentLength ??
+      cardConfig.maxBodyChars ??
+      envVars?.WECOM_BOT_CARD_MAX_CONTENT_LENGTH ??
+      processEnv?.WECOM_BOT_CARD_MAX_CONTENT_LENGTH,
+    1400,
+    200,
+    4000,
+  );
+  const responseUrlEnabled = parseBooleanLike(
+    cardConfig.responseUrlEnabled,
+    parseBooleanLike(
+      envVars?.WECOM_BOT_CARD_RESPONSE_URL_ENABLED,
+      parseBooleanLike(processEnv?.WECOM_BOT_CARD_RESPONSE_URL_ENABLED, true),
+    ),
+  );
+  const webhookBotEnabled = parseBooleanLike(
+    cardConfig.webhookBotEnabled,
+    parseBooleanLike(
+      envVars?.WECOM_BOT_CARD_WEBHOOK_BOT_ENABLED,
+      parseBooleanLike(processEnv?.WECOM_BOT_CARD_WEBHOOK_BOT_ENABLED, true),
+    ),
+  );
+  return {
+    enabled,
+    mode,
+    title,
+    subtitle: subtitle || undefined,
+    footer: footer || undefined,
+    maxContentLength,
+    responseUrlEnabled,
+    webhookBotEnabled,
+  };
+}
+
 export function resolveWecomBotModeConfig({
   channelConfig = {},
   envVars = {},
@@ -1223,6 +1400,14 @@ export function resolveWecomBotModeConfig({
     "REPLY_TIMEOUT_MS",
     "LATE_REPLY_WATCH_MS",
     "LATE_REPLY_POLL_MS",
+    "CARD_ENABLED",
+    "CARD_MODE",
+    "CARD_TITLE",
+    "CARD_SUBTITLE",
+    "CARD_FOOTER",
+    "CARD_MAX_CONTENT_LENGTH",
+    "CARD_RESPONSE_URL_ENABLED",
+    "CARD_WEBHOOK_BOT_ENABLED",
   ];
   if (normalizedAccountId !== "default") {
     const accountPrefix = `WECOM_${normalizedAccountId.toUpperCase()}_BOT_`;
@@ -1313,6 +1498,11 @@ export function resolveWecomBotModeConfig({
     500,
     10000,
   );
+  const card = resolveWecomBotCardConfig({
+    botConfig,
+    envVars: scopedEnvVars,
+    processEnv: scopedProcessEnv,
+  });
 
   return {
     accountId: normalizedAccountId,
@@ -1325,6 +1515,7 @@ export function resolveWecomBotModeConfig({
     replyTimeoutMs,
     lateReplyWatchMs,
     lateReplyPollMs,
+    card,
   };
 }
 
@@ -1344,7 +1535,8 @@ export function resolveWecomBotModeAccountsConfig({
     accountIds.add(normalizeAccountIdForEnv(accountId));
   }
 
-  const scopedBotIdRegex = /^WECOM_([A-Z0-9]+)_BOT_(ENABLED|TOKEN|ENCODING_AES_KEY|WEBHOOK_PATH|PLACEHOLDER_TEXT|STREAM_EXPIRE_MS|REPLY_TIMEOUT_MS|LATE_REPLY_WATCH_MS|LATE_REPLY_POLL_MS|PROXY)$/;
+  const scopedBotIdRegex =
+    /^WECOM_([A-Z0-9]+)_BOT_(ENABLED|TOKEN|ENCODING_AES_KEY|WEBHOOK_PATH|PLACEHOLDER_TEXT|STREAM_EXPIRE_MS|REPLY_TIMEOUT_MS|LATE_REPLY_WATCH_MS|LATE_REPLY_POLL_MS|PROXY|CARD_ENABLED|CARD_MODE|CARD_TITLE|CARD_SUBTITLE|CARD_FOOTER|CARD_MAX_CONTENT_LENGTH|CARD_RESPONSE_URL_ENABLED|CARD_WEBHOOK_BOT_ENABLED)$/;
   const collectScopedIds = (obj) => {
     if (!obj || typeof obj !== "object") return;
     for (const key of Object.keys(obj)) {

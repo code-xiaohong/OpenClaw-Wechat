@@ -73,6 +73,7 @@ export function createWecomPluginServices({
   const accountPolicy = createWecomPluginAccountPolicyServices({
     processEnv,
     getGatewayRuntime: base.getGatewayRuntime,
+    getWecomObservabilityMetrics: base.getWecomObservabilityMetrics,
     normalizeWecomResolvedTarget: base.normalizeWecomResolvedTarget,
     formatWecomTargetForLog: base.formatWecomTargetForLog,
     sendWecomWebhookText: base.sendWecomWebhookText,
@@ -89,6 +90,7 @@ export function createWecomPluginServices({
     resolveWecomWebhookBotDeliveryPolicy: accountPolicy.resolveWecomWebhookBotDeliveryPolicy,
     resolveWecomObservabilityPolicy: accountPolicy.resolveWecomObservabilityPolicy,
     resolveWecomBotProxyConfig: accountPolicy.resolveWecomBotProxyConfig,
+    resolveWecomBotConfig: accountPolicy.resolveWecomBotConfig,
     upsertBotResponseUrlCache: base.upsertBotResponseUrlCache,
     getBotResponseUrlCache: base.getBotResponseUrlCache,
     markBotResponseUrlUsed: base.markBotResponseUrlUsed,
@@ -101,6 +103,7 @@ export function createWecomPluginServices({
     fetchMediaFromUrl: base.fetchMediaFromUrl,
     extractWorkspacePathsFromText: base.extractWorkspacePathsFromText,
     resolveWorkspacePathToHost: base.resolveWorkspacePathToHost,
+    recordDeliveryMetric: base.recordDeliveryMetric,
     downloadWecomMedia: base.downloadWecomMedia,
     resolveWecomVoiceTranscriptionConfig: accountPolicy.resolveWecomVoiceTranscriptionConfig,
     transcribeInboundVoice: accountPolicy.transcribeInboundVoice,

@@ -39,6 +39,8 @@ export function createPluginRouteRuntimeDeps(context = {}) {
       deliverBotReplyText: context.deliverBotReplyText,
       finishBotStream: context.finishBotStream,
       groupAccountsByWebhookPath: context.groupAccountsByWebhookPath,
+      recordInboundMetric: context.recordInboundMetric,
+      recordRuntimeErrorMetric: context.recordRuntimeErrorMetric,
     },
     registerRuntimeDeps: {
       setGatewayRuntime: context.setGatewayRuntime,

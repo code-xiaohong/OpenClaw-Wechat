@@ -16,6 +16,7 @@ export function createWecomPluginDeliveryInboundServices({
   resolveWecomWebhookBotDeliveryPolicy,
   resolveWecomObservabilityPolicy,
   resolveWecomBotProxyConfig,
+  resolveWecomBotConfig,
   upsertBotResponseUrlCache,
   getBotResponseUrlCache,
   markBotResponseUrlUsed,
@@ -28,6 +29,7 @@ export function createWecomPluginDeliveryInboundServices({
   fetchMediaFromUrl,
   extractWorkspacePathsFromText,
   resolveWorkspacePathToHost,
+  recordDeliveryMetric,
   downloadWecomMedia,
   resolveWecomVoiceTranscriptionConfig,
   transcribeInboundVoice,
@@ -50,6 +52,7 @@ export function createWecomPluginDeliveryInboundServices({
     resolveWecomWebhookBotDeliveryPolicy,
     resolveWecomObservabilityPolicy,
     resolveWecomBotProxyConfig,
+    resolveWecomBotConfig,
     buildWecomBotSessionId,
     upsertBotResponseUrlCache,
     getBotResponseUrlCache,
@@ -64,6 +67,7 @@ export function createWecomPluginDeliveryInboundServices({
     fetchMediaFromUrl,
     extractWorkspacePathsFromText,
     resolveWorkspacePathToHost,
+    recordDeliveryMetric,
   });
 
   const { buildInboundContent } = createWecomInboundContentBuilder({

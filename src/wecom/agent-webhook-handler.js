@@ -14,6 +14,8 @@ export function createWecomAgentWebhookHandler({
   messageProcessLimiter,
   executeInboundTaskWithSessionQueue,
   processInboundMessage,
+  recordInboundMetric = () => {},
+  recordRuntimeErrorMetric = () => {},
 } = {}) {
   const dispatchInbound = createWecomAgentInboundDispatcher({
     api,
@@ -150,6 +152,11 @@ export function createWecomAgentWebhookHandler({
       api.logger.info?.(
         `wecom inbound: account=${matchedAccount.accountId} from=${fromUser} msgType=${msgType} chatId=${chatId || "N/A"} content=${(inbound?.content ?? "").slice?.(0, 80)}`,
       );
+      recordInboundMetric({
+        mode: "agent",
+        msgType,
+        accountId: matchedAccount.accountId,
+      });
 
       if (!fromUser) {
         api.logger.warn?.("wecom: inbound message missing FromUserName, dropped");
@@ -173,6 +180,10 @@ export function createWecomAgentWebhookHandler({
       }
     } catch (err) {
       api.logger.error?.(`wecom: webhook handler failed: ${String(err?.message || err)}`);
+      recordRuntimeErrorMetric({
+        scope: "agent-webhook",
+        reason: String(err?.message || err),
+      });
       if (!res.writableEnded) {
         res.statusCode = 500;
         res.setHeader("Content-Type", "text/plain; charset=utf-8");

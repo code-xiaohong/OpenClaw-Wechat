@@ -137,3 +137,42 @@ test("buildBotInboundContent aborts when voice transcription fails", async () =>
   assert.equal(result.aborted, true);
   assert.match(result.abortText, /语音识别失败/);
 });
+
+test("buildBotInboundContent supports mixed message with file and voice", async () => {
+  const build = createBuilder({
+    fetchMediaFromUrl: async (url) => {
+      if (url.includes("report.pdf")) {
+        return {
+          buffer: Buffer.from("pdf-bytes"),
+          contentType: "application/pdf",
+          contentDisposition: "attachment; filename=report.pdf",
+          finalUrl: "https://example.com/report.pdf",
+          source: "remote",
+        };
+      }
+      return {
+        buffer: Buffer.from("voice-bytes"),
+        contentType: "audio/amr",
+      };
+    },
+    resolveWecomVoiceTranscriptionConfig: () => ({
+      enabled: true,
+      maxBytes: 4 * 1024 * 1024,
+    }),
+    transcribeInboundVoice: async () => "混合语音转写",
+  });
+  const result = await build({
+    api: { logger: { info() {}, warn() {} } },
+    msgType: "mixed",
+    commandBody: "请处理混合消息",
+    normalizedFileUrl: "https://example.com/report.pdf",
+    normalizedFileName: "report.pdf",
+    normalizedVoiceUrl: "https://example.com/voice.amr",
+    normalizedVoiceMediaId: "voice-mixed-1",
+    normalizedVoiceContentType: "audio/amr",
+  });
+  assert.equal(result.aborted, false);
+  assert.match(result.messageText, /请处理混合消息/);
+  assert.match(result.messageText, /用户发送了一个文件/);
+  assert.match(result.messageText, /用户发送了一条语音/);
+});

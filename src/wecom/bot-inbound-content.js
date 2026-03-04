@@ -132,7 +132,8 @@ export function createWecomBotInboundContentBuilder({
       }
     }
 
-    if (msgType === "file") {
+    const shouldHandleFile = msgType === "file" || (msgType === "mixed" && Boolean(normalizedFileUrl));
+    if (shouldHandleFile) {
       const displayName =
         inferFilenameFromMediaDownload({
           explicitName: normalizedFileName,
@@ -170,28 +171,43 @@ export function createWecomBotInboundContentBuilder({
           );
           await writeFile(fileTempPath, decrypted.buffer);
           tempPathsToCleanup.push(fileTempPath);
-          messageText =
+          const fileInstruction =
             `[用户发送了一个文件: ${safeName}，已保存到: ${fileTempPath}]` +
             "\n\n请根据文件内容回复用户；如需读取详情请使用 Read 工具。";
+          if (msgType === "mixed" && messageText) {
+            messageText = `${messageText}\n${fileInstruction}`.trim();
+          } else {
+            messageText = fileInstruction;
+          }
           api?.logger?.info?.(
             `wecom(bot): saved file to ${fileTempPath}, size=${decrypted.buffer.length} bytes` +
               `, decrypted=${decrypted.decrypted ? "yes" : "no"} source=${downloaded.source || "unknown"}`,
           );
         } catch (fileErr) {
           api?.logger?.warn?.(`wecom(bot): failed to fetch file url: ${String(fileErr?.message || fileErr)}`);
-          messageText = `[用户发送了一个文件: ${displayName}，但下载失败]\n\n请提示用户重新发送文件。`;
+          const failedFileHint = `[用户发送了一个文件: ${displayName}，但下载失败]\n\n请提示用户重新发送文件。`;
+          if (msgType === "mixed" && messageText) {
+            messageText = `${messageText}\n${failedFileHint}`.trim();
+          } else {
+            messageText = failedFileHint;
+          }
         }
       } else if (!messageText) {
         messageText = `[用户发送了一个文件: ${displayName}]`;
       }
     }
 
-    if (msgType === "voice") {
+    const shouldHandleVoice = msgType === "voice" || (msgType === "mixed" && Boolean(normalizedVoiceUrl));
+    if (shouldHandleVoice) {
       const existingVoiceText = String(messageText ?? "").trim();
       const voiceUrl = String(normalizedVoiceUrl ?? "").trim();
       const voiceMediaId = String(normalizedVoiceMediaId ?? "").trim() || String(voiceInputMessageId ?? "").trim();
       if (existingVoiceText && existingVoiceText !== "[语音]") {
-        messageText = `[用户发送了一条语音]\n转写: ${existingVoiceText}`;
+        if (msgType === "mixed") {
+          messageText = `${existingVoiceText}\n[用户发送了一条语音]`;
+        } else {
+          messageText = `[用户发送了一条语音]\n转写: ${existingVoiceText}`;
+        }
       } else if (!voiceUrl) {
         messageText = "语音接收成功，但未提供可下载的语音链接，请用户改发文字。";
       } else {
@@ -213,7 +229,12 @@ export function createWecomBotInboundContentBuilder({
               mediaId: voiceMediaId || `bot-voice-${Date.now()}`,
               voiceConfig,
             });
-            messageText = `[用户发送了一条语音]\n转写: ${String(transcript ?? "").trim()}`;
+            const voiceText = `[用户发送了一条语音]\n转写: ${String(transcript ?? "").trim()}`;
+            if (msgType === "mixed" && messageText) {
+              messageText = `${messageText}\n${voiceText}`.trim();
+            } else {
+              messageText = voiceText;
+            }
           } catch (voiceErr) {
             api?.logger?.warn?.(`wecom(bot): voice transcription failed: ${String(voiceErr?.message || voiceErr)}`);
             return {

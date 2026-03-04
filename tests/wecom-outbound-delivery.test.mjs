@@ -32,6 +32,14 @@ function createDeliverer(overrides = {}) {
     }),
     resolveWecomObservabilityPolicy: () => ({ enabled: false, logPayloadMeta: true }),
     resolveWecomBotProxyConfig: () => "",
+    resolveWecomBotConfig: () => ({
+      card: {
+        enabled: false,
+        mode: "markdown",
+        responseUrlEnabled: true,
+        webhookBotEnabled: true,
+      },
+    }),
     buildWecomBotSessionId: (fromUser) => `wecom-bot:${String(fromUser ?? "").trim().toLowerCase()}`,
     upsertBotResponseUrlCache: ({ sessionId, responseUrl }) => {
       responseUrlCache.set(sessionId, {
@@ -167,6 +175,51 @@ test("deliverBotReplyText sends webhook media when webhook bot enabled", async (
   assert.equal(result.layer, "webhook_bot");
   assert.equal(webhookCalls.text.length, 1);
   assert.equal(webhookCalls.image.length, 1);
+});
+
+test("deliverBotReplyText sends card payload via response_url when bot card is enabled", async () => {
+  const responsePayloads = [];
+  const deliverer = createDeliverer({
+    resolveWecomDeliveryFallbackPolicy: () => ({
+      enabled: true,
+      order: ["response_url", "agent_push"],
+    }),
+    hasBotStream: () => false,
+    resolveWecomBotConfig: () => ({
+      card: {
+        enabled: true,
+        mode: "markdown",
+        title: "Bot 卡片",
+        subtitle: "处理中",
+        footer: "OpenClaw-Wechat",
+        responseUrlEnabled: true,
+        webhookBotEnabled: true,
+      },
+    }),
+    fetchImpl: async (_url, options) => {
+      responsePayloads.push(JSON.parse(String(options?.body ?? "{}")));
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ errcode: 0, errmsg: "ok" }),
+      };
+    },
+  });
+
+  const result = await deliverer.deliverBotReplyText({
+    api: createApiMock(),
+    fromUser: "dingxiang",
+    sessionId: "wecom-bot:dingxiang",
+    streamId: "stream-missing",
+    responseUrl: "https://example.com/response-url",
+    text: "卡片正文内容",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.layer, "response_url");
+  assert.equal(responsePayloads.length, 1);
+  assert.equal(responsePayloads[0]?.msgtype, "markdown");
+  assert.match(String(responsePayloads[0]?.markdown?.content ?? ""), /Bot 卡片/);
 });
 
 test("deliverBotReplyText can recover active stream by session id", async () => {

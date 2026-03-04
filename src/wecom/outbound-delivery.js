@@ -8,10 +8,13 @@ import { createWecomResponseUrlSender } from "./outbound-response-url.js";
 import { createWecomWebhookBotDeliverer } from "./outbound-webhook-delivery.js";
 import { createWecomWebhookBotMediaSender } from "./outbound-webhook-media.js";
 import { buildActiveStreamMsgItems } from "./outbound-stream-msg-item.js";
+import { buildWecomBotCardPayload } from "./outbound-bot-card.js";
 import {
   resolveWebhookBotSendUrl,
   webhookSendFileBuffer,
   webhookSendImage,
+  webhookSendMarkdown,
+  webhookSendTemplateCard,
   webhookSendText,
 } from "./webhook-bot.js";
 import { stat } from "node:fs/promises";
@@ -28,6 +31,7 @@ export function createWecomBotReplyDeliverer({
   resolveWecomWebhookBotDeliveryPolicy,
   resolveWecomObservabilityPolicy,
   resolveWecomBotProxyConfig,
+  resolveWecomBotConfig,
   buildWecomBotSessionId,
   upsertBotResponseUrlCache,
   getBotResponseUrlCache,
@@ -46,6 +50,7 @@ export function createWecomBotReplyDeliverer({
   webhookSendFileBufferFn = webhookSendFileBuffer,
   extractWorkspacePathsFromText = () => [],
   resolveWorkspacePathToHost = () => "",
+  recordDeliveryMetric = () => {},
   statImpl = stat,
   fetchImpl = fetch,
 } = {}) {
@@ -54,6 +59,7 @@ export function createWecomBotReplyDeliverer({
   assertFunction("resolveWecomWebhookBotDeliveryPolicy", resolveWecomWebhookBotDeliveryPolicy);
   assertFunction("resolveWecomObservabilityPolicy", resolveWecomObservabilityPolicy);
   assertFunction("resolveWecomBotProxyConfig", resolveWecomBotProxyConfig);
+  assertFunction("resolveWecomBotConfig", resolveWecomBotConfig);
   assertFunction("buildWecomBotSessionId", buildWecomBotSessionId);
   assertFunction("upsertBotResponseUrlCache", upsertBotResponseUrlCache);
   assertFunction("getBotResponseUrlCache", getBotResponseUrlCache);
@@ -72,6 +78,7 @@ export function createWecomBotReplyDeliverer({
   assertFunction("webhookSendFileBufferFn", webhookSendFileBufferFn);
   assertFunction("extractWorkspacePathsFromText", extractWorkspacePathsFromText);
   assertFunction("resolveWorkspacePathToHost", resolveWorkspacePathToHost);
+  assertFunction("recordDeliveryMetric", recordDeliveryMetric);
   assertFunction("statImpl", statImpl);
 
   const inlineImageExts = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"]);
@@ -134,6 +141,8 @@ export function createWecomBotReplyDeliverer({
     attachWecomProxyDispatcher,
     resolveWebhookBotSendUrl: resolveWebhookBotSendUrlFn,
     webhookSendText: webhookSendTextFn,
+    webhookSendMarkdown,
+    webhookSendTemplateCard,
     sendWebhookBotMediaBatch,
     fetchImpl,
   });
@@ -165,6 +174,7 @@ export function createWecomBotReplyDeliverer({
     const webhookBotPolicy = resolveWecomWebhookBotDeliveryPolicy(api);
     const observabilityPolicy = resolveWecomObservabilityPolicy(api);
     const botProxyUrl = resolveWecomBotProxyConfig(api, normalizedAccountId);
+    const botModeConfig = resolveWecomBotConfig(api, normalizedAccountId);
     const normalizedText = String(text ?? "").trim();
     const inlineWorkspaceMediaUrls = await collectInlineWorkspaceImageMediaUrls({
       text: normalizedText,
@@ -174,13 +184,21 @@ export function createWecomBotReplyDeliverer({
       mediaUrl,
       mediaUrls: [...(Array.isArray(mediaUrls) ? mediaUrls : []), ...inlineWorkspaceMediaUrls],
     });
-    const mixedPayload = buildWecomBotMixedPayload({
-      text: normalizedText,
-      mediaUrls: normalizedMediaUrls,
+    const mixedPayload =
+      normalizedMediaUrls.length > 0
+        ? buildWecomBotMixedPayload({
+            text: normalizedText,
+            mediaUrls: normalizedMediaUrls,
+          })
+        : null;
+    const fallbackText = normalizedText || "已收到模型返回的媒体结果，请查看以下链接。";
+    const cardPayload = buildWecomBotCardPayload({
+      text: normalizedText || fallbackText,
+      cardPolicy: botModeConfig?.card,
+      hasMedia: normalizedMediaUrls.length > 0,
     });
     const mediaFallbackSuffix =
       normalizedMediaUrls.length > 0 ? `\n\n媒体链接：\n${normalizedMediaUrls.join("\n")}` : "";
-    const fallbackText = normalizedText || "已收到模型返回的媒体结果，请查看以下链接。";
 
     const normalizedSessionId = String(sessionId ?? "").trim() || buildWecomBotSessionId(fromUser, normalizedAccountId);
     const inlineResponseUrl = String(responseUrl ?? "").trim();
@@ -216,6 +234,10 @@ export function createWecomBotReplyDeliverer({
             inlineResponseUrl,
             cachedResponseUrl,
             mixedPayload,
+            cardPayload:
+              botModeConfig?.card?.enabled === true && botModeConfig?.card?.responseUrlEnabled !== false
+                ? cardPayload
+                : null,
             content,
             fallbackText,
             logger: api.logger,
@@ -233,6 +255,8 @@ export function createWecomBotReplyDeliverer({
             normalizedText,
             normalizedMediaUrls,
             mediaType,
+            cardPayload,
+            cardPolicy: botModeConfig?.card ?? {},
           });
         },
         agent_push: async ({ text: content }) => {
@@ -248,7 +272,7 @@ export function createWecomBotReplyDeliverer({
       },
     });
 
-    return router.deliverText({
+    const deliveryResult = await router.deliverText({
       text: normalizedText || fallbackText,
       traceId,
       meta: {
@@ -259,8 +283,17 @@ export function createWecomBotReplyDeliverer({
         streamId: streamId || "",
         hasResponseUrl: Boolean(inlineResponseUrl || cachedResponseUrl?.url),
         mediaCount: normalizedMediaUrls.length,
+        botCardMode: botModeConfig?.card?.enabled ? botModeConfig.card.mode : "off",
       },
     });
+    recordDeliveryMetric({
+      layer: deliveryResult?.layer || "",
+      ok: deliveryResult?.ok === true,
+      finalStatus: deliveryResult?.finalStatus || "",
+      accountId: normalizedAccountId,
+      attempts: deliveryResult?.attempts,
+    });
+    return deliveryResult;
   }
 
   return {

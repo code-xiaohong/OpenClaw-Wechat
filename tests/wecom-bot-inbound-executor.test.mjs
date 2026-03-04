@@ -87,6 +87,11 @@ function createInput(overrides = {}) {
       allowFrom: ["*"],
       rejectMessage: "denied",
     }),
+    resolveWecomDmPolicy: () => ({
+      mode: "open",
+      allowFrom: ["*"],
+      rejectMessage: "",
+    }),
     isWecomSenderAllowed: () => true,
     extractLeadingSlashCommand: () => "",
     buildWecomBotHelpText: () => "help",

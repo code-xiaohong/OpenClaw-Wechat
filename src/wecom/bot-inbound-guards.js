@@ -54,11 +54,13 @@ export function applyWecomBotCommandAndSenderGuard({
   api,
   accountId = "default",
   fromUser,
+  isGroupChat = false,
   msgType = "text",
   commandBody = "",
   normalizedFromUser = "",
   resolveWecomCommandPolicy,
   resolveWecomAllowFromPolicy,
+  resolveWecomDmPolicy,
   isWecomSenderAllowed,
   extractLeadingSlashCommand,
   buildWecomBotHelpText,
@@ -66,6 +68,7 @@ export function applyWecomBotCommandAndSenderGuard({
 } = {}) {
   assertFunction("resolveWecomCommandPolicy", resolveWecomCommandPolicy);
   assertFunction("resolveWecomAllowFromPolicy", resolveWecomAllowFromPolicy);
+  assertFunction("resolveWecomDmPolicy", resolveWecomDmPolicy);
   assertFunction("isWecomSenderAllowed", isWecomSenderAllowed);
   assertFunction("extractLeadingSlashCommand", extractLeadingSlashCommand);
   assertFunction("buildWecomBotHelpText", buildWecomBotHelpText);
@@ -73,6 +76,33 @@ export function applyWecomBotCommandAndSenderGuard({
 
   const commandPolicy = resolveWecomCommandPolicy(api);
   const isAdminUser = commandPolicy.adminUsers.includes(String(normalizedFromUser ?? "").trim().toLowerCase());
+  const dmPolicy = resolveWecomDmPolicy(api, accountId, {});
+  if (!isGroupChat) {
+    if (dmPolicy.mode === "deny") {
+      return {
+        ok: false,
+        finishText: dmPolicy.rejectMessage || "当前渠道私聊已关闭，请联系管理员。",
+        commandBody: String(commandBody ?? ""),
+        isAdminUser,
+        commandPolicy,
+      };
+    }
+    if (dmPolicy.mode === "allowlist") {
+      const dmSenderAllowed = isAdminUser || isWecomSenderAllowed({
+        senderId: normalizedFromUser,
+        allowFrom: dmPolicy.allowFrom,
+      });
+      if (!dmSenderAllowed) {
+        return {
+          ok: false,
+          finishText: dmPolicy.rejectMessage || "当前私聊账号未授权，请联系管理员。",
+          commandBody: String(commandBody ?? ""),
+          isAdminUser,
+          commandPolicy,
+        };
+      }
+    }
+  }
   const allowFromPolicy = resolveWecomAllowFromPolicy(api, accountId, {});
   const senderAllowed = isAdminUser || isWecomSenderAllowed({
     senderId: normalizedFromUser,

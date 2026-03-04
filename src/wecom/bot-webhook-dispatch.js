@@ -64,6 +64,8 @@ export function createWecomBotParsedDispatcher({
   processBotInboundMessage,
   deliverBotReplyText,
   finishBotStream,
+  recordInboundMetric = () => {},
+  recordRuntimeErrorMetric = () => {},
   randomUuid = () => "",
 } = {}) {
   assertFunction("cleanupExpiredBotStreams", cleanupExpiredBotStreams);
@@ -147,6 +149,11 @@ export function createWecomBotParsedDispatcher({
       )
       .catch((err) => {
         api.logger.error?.(`wecom(bot): async message processing failed: ${String(err?.message || err)}`);
+        recordRuntimeErrorMetric({
+          scope: "bot-dispatch",
+          reason: String(err?.message || err),
+          accountId: parsed.accountId,
+        });
         deliverBotReplyText({
           api,
           fromUser: parsed.fromUser,
@@ -173,6 +180,11 @@ export function createWecomBotParsedDispatcher({
       return;
     }
     const accountId = String(parsed?.accountId ?? "default").trim().toLowerCase() || "default";
+    recordInboundMetric({
+      mode: "bot",
+      msgType: parsed.msgType || parsed.kind || "unknown",
+      accountId,
+    });
     const dedupeStub = {
       MsgId: parsed.msgId,
       FromUserName: parsed.fromUser,

@@ -13,6 +13,7 @@ import { createWecomBotEncryptedResponseBuilder } from "./bot-encrypted-response
 import { createWecomDefaultLimiters } from "./rate-limiter.js";
 import { createWecomMediaFetcher, normalizeOutboundMediaUrls, resolveWecomOutboundMediaTarget } from "./media-url-utils.js";
 import { createWecomOutboundSender } from "./outbound-sender.js";
+import { createWecomObservabilityMetricsStore } from "./observability-metrics.js";
 import { createWecomRequestParsers } from "./request-parsers.js";
 import { createWecomTargetResolver } from "./target-utils.js";
 import { createDeliveredTranscriptReplyTracker } from "./transcript-utils.js";
@@ -38,6 +39,12 @@ export function createWecomPluginBaseServices({
   fetchImpl = fetch,
   proxyAgentCtor = ProxyAgent,
 } = {}) {
+  const {
+    recordInboundMetric,
+    recordDeliveryMetric,
+    recordRuntimeErrorMetric,
+    getWecomObservabilityMetrics,
+  } = createWecomObservabilityMetricsStore();
   const { markTranscriptReplyDelivered, hasTranscriptReplyBeenDelivered } = createDeliveredTranscriptReplyTracker({
     ttlMs: TRANSCRIPT_REPLY_CACHE_TTL_MS,
   });
@@ -146,6 +153,10 @@ export function createWecomPluginBaseServices({
   return {
     markTranscriptReplyDelivered,
     hasTranscriptReplyBeenDelivered,
+    recordInboundMetric,
+    recordDeliveryMetric,
+    recordRuntimeErrorMetric,
+    getWecomObservabilityMetrics,
     scheduleTempFileCleanup,
     setBotStreamExpireMs,
     resolveBotActiveStream,

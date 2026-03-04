@@ -16,6 +16,7 @@ export function createWecomResponseUrlDeliverer({
     inlineResponseUrl = "",
     cachedResponseUrl = null,
     mixedPayload = null,
+    cardPayload = null,
     content = "",
     fallbackText = "",
     logger,
@@ -29,12 +30,14 @@ export function createWecomResponseUrlDeliverer({
     if (cachedResponseUrl?.used) {
       return { ok: false, reason: "response-url-used" };
     }
-    const payload = mixedPayload || {
-      msgtype: "text",
-      text: {
-        content: content || fallbackText,
-      },
-    };
+    const payload =
+      mixedPayload ||
+      cardPayload || {
+        msgtype: "text",
+        text: {
+          content: content || fallbackText,
+        },
+      };
     const result = await sendWecomBotPayloadViaResponseUrl({
       responseUrl: targetUrl,
       payload,
@@ -48,6 +51,7 @@ export function createWecomResponseUrlDeliverer({
       meta: {
         status: result.status,
         errcode: result.errcode ?? 0,
+        msgtype: String(payload?.msgtype ?? "text").trim().toLowerCase() || "text",
       },
     };
   };

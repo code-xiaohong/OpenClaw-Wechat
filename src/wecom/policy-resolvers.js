@@ -6,6 +6,7 @@ export function createWecomPolicyResolvers({
   resolveWecomProxyConfig,
   resolveWecomCommandPolicyConfig,
   resolveWecomAllowFromPolicyConfig,
+  resolveWecomDmPolicyConfig,
   resolveWecomGroupChatConfig,
   resolveWecomDebounceConfig,
   resolveWecomStreamingConfig,
@@ -101,6 +102,18 @@ export function createWecomPolicyResolvers({
     });
   }
 
+  function resolveWecomDmPolicy(api, accountId, accountConfig = {}) {
+    const inputs = resolveWecomPolicyInputs(api);
+    if (typeof resolveWecomDmPolicyConfig !== "function") {
+      return { mode: "open", allowFrom: [], rejectMessage: "当前私聊账号未授权，请联系管理员。", enabled: false };
+    }
+    return resolveWecomDmPolicyConfig({
+      ...inputs,
+      accountId: normalizeAccountId(accountId ?? "default"),
+      accountConfig: accountConfig ?? {},
+    });
+  }
+
   function resolveWecomGroupChatPolicy(api) {
     return resolveWecomGroupChatConfig(resolveWecomPolicyInputs(api));
   }
@@ -140,6 +153,7 @@ export function createWecomPolicyResolvers({
     resolveWecomBotProxyConfig,
     resolveWecomCommandPolicy,
     resolveWecomAllowFromPolicy,
+    resolveWecomDmPolicy,
     resolveWecomGroupChatPolicy,
     resolveWecomTextDebouncePolicy,
     resolveWecomReplyStreamingPolicy,

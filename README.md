@@ -92,12 +92,15 @@ npm run wecom:selfcheck -- --all-accounts
 | 企业微信入站消息处理 | ✅ | 文本、图片、语音、链接、文件/视频（Agent + Bot） |
 | AI 自动回复 | ✅ | 接入 OpenClaw Runtime，自动路由 Agent |
 | Bot 原生 stream 协议 | ✅ | `msgtype=stream` 刷新与增量回包 |
+| Bot 卡片回包 | ✅ | 支持 `markdown/template_card`，失败自动降级文本 |
 | 多账户 | ✅ | `channels.wecom.accounts.<id>` |
 | 发送者授权控制 | ✅ | `allowFrom` + 账户级覆盖 |
+| 私聊策略（DM） | ✅ | `dm.mode=open/allowlist/deny` + 账户级覆盖 |
 | 命令白名单 | ✅ | `/help` `/status` `/clear` `/new` 等 |
 | 群聊触发策略 | ✅ | 支持 `direct/mention/keyword` 三种模式 |
 | 文本防抖合并 | ✅ | 窗口期内多条消息合并投递 |
 | 异步补发（超时后） | ✅ | transcript 轮询补发最终回复 |
+| 观测统计 | ✅ | 入站/回包/错误计数 + 最近失败样本（`/status`） |
 | WeCom 出站代理 | ✅ | `outboundProxy` / `WECOM_PROXY` |
 
 ### 媒体能力
@@ -293,6 +296,20 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | `replyTimeoutMs` | integer | `90000` | Bot 等待模型回包超时（15s~10m） |
 | `lateReplyWatchMs` | integer | `180000` | Bot 超时后异步补发观察窗口（30s~10m） |
 | `lateReplyPollMs` | integer | `2000` | Bot 异步补发轮询间隔（500ms~10s） |
+| `card` | object | 见下方 | Bot 卡片回包策略（`response_url` / `webhook_bot`） |
+
+#### Bot 卡片配置（`channels.wecom.bot.card`）
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `enabled` | boolean | `false` | 启用卡片回包 |
+| `mode` | string | `markdown` | `markdown`（兼容优先）或 `template_card` |
+| `title` | string | `OpenClaw-Wechat` | 卡片标题 |
+| `subtitle` | string | - | 卡片副标题 |
+| `footer` | string | - | 卡片底部说明 |
+| `maxContentLength` | integer | `1400` | 卡片正文最大长度（自动截断） |
+| `responseUrlEnabled` | boolean | `true` | 是否在 `response_url` 层发送卡片 |
+| `webhookBotEnabled` | boolean | `true` | 是否在 `webhook_bot` 层发送卡片 |
 
 ### 多账户 Bot 覆盖配置（`channels.wecom.accounts.<id>.bot`）
 
@@ -309,6 +326,7 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | `replyTimeoutMs` | integer | `90000` | Bot 等待模型回包超时 |
 | `lateReplyWatchMs` | integer | `180000` | 超时后异步补发观察窗口 |
 | `lateReplyPollMs` | integer | `2000` | 异步补发轮询间隔 |
+| `card` | object | - | 该账户专用卡片回包配置（覆盖全局 `bot.card`） |
 | `outboundProxy` / `proxyUrl` / `proxy` | string | - | 该账户 Bot 专用代理（优先于全局） |
 
 ### 授权与指令策略
@@ -319,6 +337,7 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | 拒绝文案 | `allowFromRejectMessage` | 未授权提示 |
 | 管理员 | `adminUsers` | 绕过命令白名单 |
 | 命令白名单 | `commands.enabled` + `commands.allowlist` | 限制 `/` 指令 |
+| 私聊策略 | `dm.mode` + `dm.allowFrom` + `dm.rejectMessage` | 控制私聊开放/白名单/拒绝 |
 | 群聊触发 | `groupChat.enabled` + `triggerMode` + `mentionPatterns` + `triggerKeywords` | 控制群消息触发条件 |
 | 动态路由 | `dynamicAgent.*`（兼容 `dynamicAgents.*`、`dm.createAgentOnFirstMessage`） | 动态 Agent + workspace bootstrap 播种 |
 
@@ -329,6 +348,7 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | 文本防抖 | `debounce.enabled/windowMs/maxBatch` | 合并短时间多条文本 |
 | Agent 增量回包 | `streaming.enabled/minChars/minIntervalMs` | 多消息模拟流式 |
 | 异步补发 | `WECOM_LATE_REPLY_WATCH_MS/POLL_MS` | dispatch 超时后补发最终回复 |
+| 观测统计 | `observability.enabled/logPayloadMeta` | 记录入站/回包/错误并在 `/status` 展示 |
 
 ### 语音转写（本地）
 
@@ -466,6 +486,14 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | `WECOM_BOT_REPLY_TIMEOUT_MS` | 否 | Bot 等待模型回包超时 |
 | `WECOM_BOT_LATE_REPLY_WATCH_MS` | 否 | Bot 超时后补发观察窗口 |
 | `WECOM_BOT_LATE_REPLY_POLL_MS` | 否 | Bot 补发轮询间隔 |
+| `WECOM_BOT_CARD_ENABLED` | 否 | 是否启用 Bot 卡片回包 |
+| `WECOM_BOT_CARD_MODE` | 否 | 卡片模式：`markdown` / `template_card` |
+| `WECOM_BOT_CARD_TITLE` | 否 | 卡片标题 |
+| `WECOM_BOT_CARD_SUBTITLE` | 否 | 卡片副标题 |
+| `WECOM_BOT_CARD_FOOTER` | 否 | 卡片底部说明 |
+| `WECOM_BOT_CARD_MAX_CONTENT_LENGTH` | 否 | 卡片正文最大长度 |
+| `WECOM_BOT_CARD_RESPONSE_URL_ENABLED` | 否 | response_url 层卡片开关 |
+| `WECOM_BOT_CARD_WEBHOOK_BOT_ENABLED` | 否 | webhook_bot 层卡片开关 |
 | `WECOM_<ACCOUNT>_BOT_*` | 否 | 账户级 Bot 覆盖（如 `WECOM_SALES_BOT_TOKEN`） |
 | `WECOM_<ACCOUNT>_BOT_PROXY` | 否 | 账户级 Bot 媒体下载/回包代理 |
 
@@ -477,10 +505,12 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | `WECOM_ALLOW_FROM_REJECT_MESSAGE` / `WECOM_<ACCOUNT>_ALLOW_FROM_REJECT_MESSAGE` | 未授权提示 |
 | `WECOM_ADMIN_USERS` | 管理员用户列表 |
 | `WECOM_COMMANDS_ENABLED` / `WECOM_COMMANDS_ALLOWLIST` / `WECOM_COMMANDS_REJECT_MESSAGE` | 命令白名单策略 |
+| `WECOM_DM_POLICY` / `WECOM_DM_MODE` / `WECOM_DM_ALLOW_FROM` / `WECOM_DM_REJECT_MESSAGE` | 私聊策略（支持 `WECOM_<ACCOUNT>_DM_*` 覆盖） |
 | `WECOM_GROUP_CHAT_ENABLED` / `WECOM_GROUP_CHAT_REQUIRE_MENTION` / `WECOM_GROUP_CHAT_MENTION_PATTERNS` | 群触发策略 |
 | `WECOM_DEBOUNCE_ENABLED` / `WECOM_DEBOUNCE_WINDOW_MS` / `WECOM_DEBOUNCE_MAX_BATCH` | 文本防抖 |
 | `WECOM_STREAMING_ENABLED` / `WECOM_STREAMING_MIN_CHARS` / `WECOM_STREAMING_MIN_INTERVAL_MS` | Agent 增量回包 |
 | `WECOM_LATE_REPLY_WATCH_MS` / `WECOM_LATE_REPLY_POLL_MS` | 异步补发窗口与轮询频率 |
+| `WECOM_OBSERVABILITY_ENABLED` / `WECOM_OBSERVABILITY_PAYLOAD_META` | 观测统计与载荷元信息日志开关 |
 
 ### 语音回退转写
 

@@ -23,6 +23,7 @@ export function assertWecomBotInboundFlowDeps({ api, ...deps } = {}) {
     "stripWecomGroupMentions",
     "resolveWecomCommandPolicy",
     "resolveWecomAllowFromPolicy",
+    "resolveWecomDmPolicy",
     "isWecomSenderAllowed",
     "extractLeadingSlashCommand",
     "buildWecomBotHelpText",

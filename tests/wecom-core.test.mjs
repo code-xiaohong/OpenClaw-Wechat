@@ -267,6 +267,56 @@ test("allowFrom policy supports dm.allowFrom compatibility keys", () => {
   assert.deepEqual(policy.allowFrom, ["legacy_dm_user"]);
 });
 
+test("resolveWecomDmPolicyConfig supports mode/allowlist and scoped env fallback", () => {
+  const denyPolicy = core.resolveWecomDmPolicyConfig({
+    channelConfig: {
+      dm: {
+        mode: "deny",
+        rejectMessage: "私聊已关闭",
+      },
+    },
+    accountConfig: {},
+    envVars: {},
+    processEnv: {},
+    accountId: "default",
+  });
+  assert.equal(denyPolicy.mode, "deny");
+  assert.equal(denyPolicy.rejectMessage, "私聊已关闭");
+
+  const allowlistPolicy = core.resolveWecomDmPolicyConfig({
+    channelConfig: {
+      dm: {
+        mode: "allowlist",
+      },
+    },
+    accountConfig: {
+      dm: {
+        allowFrom: ["wecom:Alice", "user:Bob"],
+      },
+    },
+    envVars: {},
+    processEnv: {},
+    accountId: "sales",
+  });
+  assert.equal(allowlistPolicy.mode, "allowlist");
+  assert.deepEqual(allowlistPolicy.allowFrom.sort(), ["alice", "bob"]);
+
+  const scopedEnvPolicy = core.resolveWecomDmPolicyConfig({
+    channelConfig: {},
+    accountConfig: {},
+    envVars: {
+      WECOM_SALES_DM_POLICY: "allowlist",
+      WECOM_SALES_DM_ALLOW_FROM: "user:Tom,wecom:Jerry",
+      WECOM_SALES_DM_REJECT_MESSAGE: "销售私聊未授权",
+    },
+    processEnv: {},
+    accountId: "sales",
+  });
+  assert.equal(scopedEnvPolicy.mode, "allowlist");
+  assert.deepEqual(scopedEnvPolicy.allowFrom.sort(), ["jerry", "tom"]);
+  assert.equal(scopedEnvPolicy.rejectMessage, "销售私聊未授权");
+});
+
 test("isWecomSenderAllowed matches normalized sender ids", () => {
   assert.equal(core.isWecomSenderAllowed({ senderId: "wecom:Alice", allowFrom: ["user:alice"] }), true);
   assert.equal(core.isWecomSenderAllowed({ senderId: "Bob", allowFrom: ["alice"] }), false);
@@ -547,6 +597,59 @@ test("resolveWecomBotModeConfig supports account-scoped bot config and legacy ke
   assert.equal(cfg.placeholderText, "sales processing");
 });
 
+test("resolveWecomBotModeConfig resolves bot card policy from config and env", () => {
+  const fromConfig = core.resolveWecomBotModeConfig({
+    channelConfig: {
+      bot: {
+        enabled: true,
+        card: {
+          enabled: true,
+          mode: "template_card",
+          title: "OpenClaw 卡片",
+          subtitle: "处理中",
+          footer: "由 OpenClaw-Wechat 发送",
+          maxContentLength: 1888,
+          responseUrlEnabled: true,
+          webhookBotEnabled: false,
+        },
+      },
+    },
+    envVars: {},
+    processEnv: {},
+  });
+  assert.equal(fromConfig.card.enabled, true);
+  assert.equal(fromConfig.card.mode, "template_card");
+  assert.equal(fromConfig.card.title, "OpenClaw 卡片");
+  assert.equal(fromConfig.card.subtitle, "处理中");
+  assert.equal(fromConfig.card.footer, "由 OpenClaw-Wechat 发送");
+  assert.equal(fromConfig.card.maxContentLength, 1888);
+  assert.equal(fromConfig.card.responseUrlEnabled, true);
+  assert.equal(fromConfig.card.webhookBotEnabled, false);
+
+  const fromEnv = core.resolveWecomBotModeConfig({
+    channelConfig: {},
+    envVars: {
+      WECOM_BOT_CARD_ENABLED: "true",
+      WECOM_BOT_CARD_MODE: "markdown",
+      WECOM_BOT_CARD_TITLE: "Env Card",
+      WECOM_BOT_CARD_SUBTITLE: "Env subtitle",
+      WECOM_BOT_CARD_FOOTER: "Env footer",
+      WECOM_BOT_CARD_MAX_CONTENT_LENGTH: "3200",
+      WECOM_BOT_CARD_RESPONSE_URL_ENABLED: "false",
+      WECOM_BOT_CARD_WEBHOOK_BOT_ENABLED: "true",
+    },
+    processEnv: {},
+  });
+  assert.equal(fromEnv.card.enabled, true);
+  assert.equal(fromEnv.card.mode, "markdown");
+  assert.equal(fromEnv.card.title, "Env Card");
+  assert.equal(fromEnv.card.subtitle, "Env subtitle");
+  assert.equal(fromEnv.card.footer, "Env footer");
+  assert.equal(fromEnv.card.maxContentLength, 3200);
+  assert.equal(fromEnv.card.responseUrlEnabled, false);
+  assert.equal(fromEnv.card.webhookBotEnabled, true);
+});
+
 test("resolveWecomBotModeConfig supports legacy agent+top-level bot token layout", () => {
   const cfg = core.resolveWecomBotModeConfig({
     channelConfig: {
@@ -702,6 +805,27 @@ test("resolveWecomBotModeAccountsConfig collects legacy inline account ids", () 
   const byAccount = new Map(configs.map((item) => [item.accountId, item]));
   assert.equal(byAccount.get("ops")?.token, "ops-token");
   assert.equal(byAccount.get("ops")?.webhookPath, "/webhooks/wecom/ops");
+});
+
+test("resolveWecomBotModeAccountsConfig detects account from scoped bot card env", () => {
+  const configs = core.resolveWecomBotModeAccountsConfig({
+    channelConfig: {
+      bot: {
+        enabled: true,
+        token: "default-token",
+        encodingAesKey: "default-aes",
+      },
+    },
+    envVars: {
+      WECOM_SALES_BOT_CARD_ENABLED: "true",
+      WECOM_SALES_BOT_CARD_MODE: "markdown",
+    },
+    processEnv: {},
+  });
+  const byAccount = new Map(configs.map((item) => [item.accountId, item]));
+  assert.equal(byAccount.has("sales"), true);
+  assert.equal(byAccount.get("sales")?.card?.enabled, true);
+  assert.equal(byAccount.get("sales")?.card?.mode, "markdown");
 });
 
 test("resolveWecomDeliveryFallbackConfig defaults and normalization", () => {

@@ -238,6 +238,30 @@ test("parseWecomBotInboundMessage parses mixed text and image url", () => {
   assert.deepEqual(parsed.imageUrls, ["https://example.com/a.png"]);
 });
 
+test("parseWecomBotInboundMessage parses mixed file and voice metadata", () => {
+  const parsed = parseWecomBotInboundMessage({
+    msgtype: "mixed",
+    msgid: "m2",
+    from: { userid: "dingxiang" },
+    mixed: {
+      msg_item: [
+        { msgtype: "text", text: { content: "请处理附件和语音" } },
+        { msgtype: "file", file: { url: "https://example.com/report.pdf", name: "report.pdf" } },
+        { msgtype: "voice", voice: { url: "https://example.com/voice.amr", media_id: "voice-1", content_type: "audio/amr" } },
+      ],
+    },
+  });
+  assert.equal(parsed.kind, "message");
+  assert.equal(parsed.msgType, "mixed");
+  assert.equal(parsed.fileUrl, "https://example.com/report.pdf");
+  assert.equal(parsed.fileName, "report.pdf");
+  assert.equal(parsed.voiceUrl, "https://example.com/voice.amr");
+  assert.equal(parsed.voiceMediaId, "voice-1");
+  assert.equal(parsed.voiceContentType, "audio/amr");
+  assert.match(parsed.content, /\[文件\]/);
+  assert.match(parsed.content, /\[语音\]/);
+});
+
 test("parseWecomBotInboundMessage parses file payload", () => {
   const parsed = parseWecomBotInboundMessage({
     msgtype: "file",
