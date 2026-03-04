@@ -912,12 +912,7 @@
               "type": "string",
               "description": "可选：该账户发送者未授权时的拒绝文案（覆盖 channels.wecom.allowFromRejectMessage）"
             }
-          },
-          "required": [
-            "corpId",
-            "corpSecret",
-            "agentId"
-          ]
+          }
         }
       }
     }
