@@ -549,6 +549,7 @@ npm run wecom:bot:selfcheck
 | `WECOM_E2E_BOT_URL=<...> WECOM_E2E_AGENT_URL=<...> npm run wecom:remote:e2e -- --mode all` | 用环境变量驱动远端 E2E（兼容旧 `E2E_WECOM_*`） |
 | `npm run wecom:e2e:scenario -- --scenario full-smoke --agent-url <公网Agent回调> --bot-url <公网Bot回调>` | 场景化 E2E（预置 smoke/queue 场景） |
 | `npm run wecom:e2e:scenario -- --scenario compat-smoke --agent-url <新Agent回调> --agent-legacy-url <旧Agent回调> --bot-url <新Bot回调> --bot-legacy-url <旧Bot回调>` | 兼容矩阵验证（新旧回调地址都跑一遍） |
+| `npm run wecom:e2e:compat -- --agent-url <新Agent回调> --agent-legacy-url <旧Agent回调> --bot-url <新Bot回调> --bot-legacy-url <旧Bot回调>` | 兼容矩阵快捷命令（等价 `--scenario compat-smoke`） |
 | `npm run wecom:e2e:full -- --agent-url <公网Agent回调> --bot-url <公网Bot回调>` | 一键 full-smoke（默认带 `--prepare-browser --collect-pdf`） |
 | `GitHub Actions -> CI -> Run workflow` | 在仓库 CI 手动触发远程 E2E：设置 `run_remote_e2e=true`，可选 `e2e_scenario`（含 `compat-smoke`）与浏览器参数 |
 | `npm run wecom:smoke` | 升级后快速回归（Agent 主链路） |
