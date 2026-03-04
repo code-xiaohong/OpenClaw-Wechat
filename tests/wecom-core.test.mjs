@@ -204,6 +204,20 @@ test("resolveWecomCommandPolicyConfig supports commands.blockMessage alias", () 
   assert.equal(policy.rejectMessage, "blocked by alias");
 });
 
+test("resolveWecomCommandPolicyConfig auto-enables when commands.allowlist exists", () => {
+  const policy = core.resolveWecomCommandPolicyConfig({
+    channelConfig: {
+      commands: {
+        allowlist: ["/new", "/status"],
+      },
+    },
+    envVars: {},
+    processEnv: {},
+  });
+  assert.equal(policy.enabled, true);
+  assert.deepEqual(policy.allowlist.sort(), ["/new", "/status"]);
+});
+
 test("allowFrom policy resolves account override and env fallback", () => {
   const accountPolicy = core.resolveWecomAllowFromPolicyConfig({
     channelConfig: {

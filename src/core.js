@@ -607,19 +607,20 @@ export function resolveWecomCommandPolicyConfig({
   const commandConfig =
     channelConfig?.commands && typeof channelConfig.commands === "object" ? channelConfig.commands : {};
   const legacyAllowlist = uniqueCommandList(parseStringList(channelConfig?.commandAllowlist));
-  const enabled = parseBooleanLike(
-    commandConfig.enabled,
-    parseBooleanLike(
-      envVars?.WECOM_COMMANDS_ENABLED,
-      parseBooleanLike(processEnv?.WECOM_COMMANDS_ENABLED, legacyAllowlist.length > 0),
-    ),
-  );
   const configuredAllowlist = uniqueCommandList(
     parseStringList(
       commandConfig.allowlist,
       legacyAllowlist,
       envVars?.WECOM_COMMANDS_ALLOWLIST,
       processEnv?.WECOM_COMMANDS_ALLOWLIST,
+    ),
+  );
+  const allowlistEnabledByConfig = configuredAllowlist.length > 0;
+  const enabled = parseBooleanLike(
+    commandConfig.enabled,
+    parseBooleanLike(
+      envVars?.WECOM_COMMANDS_ENABLED,
+      parseBooleanLike(processEnv?.WECOM_COMMANDS_ENABLED, allowlistEnabledByConfig),
     ),
   );
   const allowlist = configuredAllowlist.length > 0 ? configuredAllowlist : Array.from(DEFAULT_COMMAND_ALLOWLIST);
