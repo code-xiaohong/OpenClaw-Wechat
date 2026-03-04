@@ -370,6 +370,31 @@ function buildSignedEncryptedRequest({ endpoint, token, aesKey, payload }) {
   };
 }
 
+function buildSignedVerifyRequest({ endpoint, token, aesKey, plainEchostr }) {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = crypto.randomBytes(8).toString("hex");
+  const encryptedEchostr = encryptWecom({
+    aesKey,
+    plainText: String(plainEchostr ?? ""),
+    corpId: "",
+  });
+  const msgSignature = computeMsgSignature({
+    token,
+    timestamp,
+    nonce,
+    encrypt: encryptedEchostr,
+  });
+  const url = new URL(endpoint);
+  url.searchParams.set("msg_signature", msgSignature);
+  url.searchParams.set("timestamp", timestamp);
+  url.searchParams.set("nonce", nonce);
+  url.searchParams.set("echostr", encryptedEchostr);
+  return {
+    requestUrl: url.toString(),
+    encryptedEchostr,
+  };
+}
+
 function parseEncryptedCallbackResponse(rawBody) {
   const body = JSON.parse(rawBody);
   const encrypt = String(body?.encrypt ?? "").trim();
@@ -535,6 +560,34 @@ async function runBotE2E({ config, args, configPath, accountId }) {
     );
   } catch (err) {
     checks.push(makeCheck("local.webhook.health", false, `probe failed: ${String(err?.message || err)}`));
+  }
+
+  try {
+    const verifyPlain = `bot_selfcheck_verify_${Date.now().toString(36)}`;
+    const signedVerify = buildSignedVerifyRequest({
+      endpoint,
+      token: botConfig.token,
+      aesKey: botConfig.encodingAesKey,
+      plainEchostr: verifyPlain,
+    });
+    const verifyResp = await fetchWithTimeout(
+      signedVerify.requestUrl,
+      { method: "GET" },
+      Math.min(args.timeoutMs, 4000),
+    );
+    const verifyBody = await verifyResp.text();
+    const verifyOk = verifyResp.status === 200 && verifyBody === verifyPlain;
+    checks.push(
+      makeCheck(
+        "e2e.url.verify",
+        verifyOk,
+        verifyOk
+          ? "callback verify succeeded"
+          : `status=${verifyResp.status} body=${String(verifyBody ?? "").slice(0, 120)}`,
+      ),
+    );
+  } catch (err) {
+    checks.push(makeCheck("e2e.url.verify", false, `request failed: ${String(err?.message || err)}`));
   }
 
   const messagePayload = {

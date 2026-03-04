@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -30,6 +32,37 @@ async function runBotSelfcheck(args = []) {
       });
     });
   });
+}
+
+function decodeAesKey(aesKey) {
+  const keyBase64 = String(aesKey ?? "").endsWith("=") ? String(aesKey) : `${String(aesKey)}=`;
+  const key = Buffer.from(keyBase64, "base64");
+  if (key.length !== 32) throw new Error(`invalid key length=${key.length}`);
+  return key;
+}
+
+function pkcs7Unpad(buf) {
+  const pad = buf[buf.length - 1];
+  if (pad < 1 || pad > 32) return buf;
+  return buf.subarray(0, buf.length - pad);
+}
+
+function decryptWecomCipher({ aesKey, cipherTextBase64 }) {
+  const key = decodeAesKey(aesKey);
+  const iv = key.subarray(0, 16);
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+  decipher.setAutoPadding(false);
+  const plain = Buffer.concat([decipher.update(Buffer.from(cipherTextBase64, "base64")), decipher.final()]);
+  const unpadded = pkcs7Unpad(plain);
+  const msgLen = unpadded.readUInt32BE(16);
+  const msgStart = 20;
+  const msgEnd = msgStart + msgLen;
+  return unpadded.subarray(msgStart, msgEnd).toString("utf8");
+}
+
+function computeMsgSignature({ token, timestamp, nonce, encrypt }) {
+  const arr = [token, timestamp, nonce, encrypt].map(String).sort();
+  return crypto.createHash("sha1").update(arr.join("")).digest("hex");
 }
 
 test("wecom-bot-selfcheck supports --all-accounts discovery", async () => {
@@ -85,4 +118,93 @@ test("wecom-bot-selfcheck rejects --url with --all-accounts", async () => {
   ]);
   assert.equal(result.code, 1);
   assert.match(result.stderr, /cannot be used with --all-accounts/i);
+});
+
+test("wecom-bot-selfcheck performs URL verify check", async (t) => {
+  const token = "bot-selfcheck-token";
+  const aesKey = Buffer.alloc(32, 7).toString("base64").replace(/=+$/g, "");
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    const echostr = String(url.searchParams.get("echostr") ?? "");
+    if (req.method === "GET" && !echostr) {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end("wecom bot webhook ok");
+      return;
+    }
+    if (req.method === "GET" && echostr) {
+      const timestamp = String(url.searchParams.get("timestamp") ?? "");
+      const nonce = String(url.searchParams.get("nonce") ?? "");
+      const msgSignature = String(url.searchParams.get("msg_signature") ?? "");
+      const expected = computeMsgSignature({
+        token,
+        timestamp,
+        nonce,
+        encrypt: echostr,
+      });
+      if (!timestamp || !nonce || !msgSignature || expected !== msgSignature) {
+        res.statusCode = 401;
+        res.end("invalid signature");
+        return;
+      }
+      const plain = decryptWecomCipher({
+        aesKey,
+        cipherTextBase64: echostr,
+      });
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end(plain);
+      return;
+    }
+    res.statusCode = 500;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("mock post failure");
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  assert.ok(port > 0);
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wecom-bot-selfcheck-"));
+  const configPath = path.join(tempDir, "openclaw.json");
+  const config = {
+    gateway: { port },
+    plugins: {
+      allow: ["openclaw-wechat"],
+      entries: {
+        "openclaw-wechat": { enabled: true },
+      },
+    },
+    channels: {
+      wecom: {
+        bot: {
+          enabled: true,
+          token,
+          encodingAesKey: aesKey,
+          webhookPath: "/wecom/bot/callback",
+        },
+      },
+    },
+  };
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const result = await runBotSelfcheck([
+    "--config",
+    configPath,
+    "--url",
+    `http://127.0.0.1:${port}/wecom/bot/callback`,
+    "--poll-count",
+    "1",
+    "--poll-interval-ms",
+    "10",
+    "--json",
+  ]);
+  assert.equal(result.code, 1);
+  const report = JSON.parse(result.stdout);
+  const accountReport = report?.accounts?.[0];
+  const verifyCheck = accountReport?.checks?.find((item) => item?.name === "e2e.url.verify");
+  assert.ok(verifyCheck);
+  assert.equal(verifyCheck.ok, true);
 });

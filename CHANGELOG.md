@@ -35,6 +35,7 @@ All notable changes to this project will be documented in this file.
 - 新增安装元数据：`package.json` 增加 `openclaw.install`（`defaultChoice=npm` + `npmSpec=@dingxiang-me/openclaw-wechat`）
 - 新增命令兼容映射：`/new` 与 `/clear` 一样会转换为 `/reset`（Agent/Bot 双模式，支持 `/new` 白名单兼容）
 - 新增 Bot 自检插件加载诊断：输出 `plugins.enabled / plugins.entry.openclaw-wechat / plugins.allow` 三项结果
+- 新增 Bot 自检 URL 验证检查：`e2e.url.verify` 覆盖 `GET echostr` 验签 + 解密回显
 
 ### Changed
 - 多账号默认回调路径自动分配：
