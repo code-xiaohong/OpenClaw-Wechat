@@ -76,15 +76,16 @@ export async function applyWecomAgentInboundGuards({
 
   if (msgType === "text") {
     let commandKey = extractLeadingSlashCommand(nextCommandBody);
-    if (commandKey === "/clear") {
-      api?.logger?.info?.("wecom: translating /clear to native /reset command");
-      nextCommandBody = nextCommandBody.replace(/^\/clear\b/i, "/reset");
+    if (commandKey === "/clear" || commandKey === "/new") {
+      api?.logger?.info?.(`wecom: translating ${commandKey} to native /reset command`);
+      nextCommandBody = nextCommandBody.replace(/^\/(?:clear|new)\b/i, "/reset");
       commandKey = "/reset";
     }
     if (commandKey) {
       const commandAllowed =
         commandPolicy.allowlist.includes(commandKey) ||
-        (commandKey === "/reset" && commandPolicy.allowlist.includes("/clear"));
+        (commandKey === "/reset" &&
+          (commandPolicy.allowlist.includes("/clear") || commandPolicy.allowlist.includes("/new")));
       if (commandPolicy.enabled && !isAdminUser && !commandAllowed) {
         api?.logger?.info?.(`wecom: command blocked by allowlist user=${fromUser} command=${commandKey}`);
         await sendTextToUser(commandPolicy.rejectMessage);

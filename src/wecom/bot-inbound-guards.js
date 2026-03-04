@@ -91,14 +91,15 @@ export function applyWecomBotCommandAndSenderGuard({
   let nextCommandBody = String(commandBody ?? "");
   if (msgType === "text") {
     let commandKey = extractLeadingSlashCommand(nextCommandBody);
-    if (commandKey === "/clear") {
-      nextCommandBody = nextCommandBody.replace(/^\/clear\b/i, "/reset");
+    if (commandKey === "/clear" || commandKey === "/new") {
+      nextCommandBody = nextCommandBody.replace(/^\/(?:clear|new)\b/i, "/reset");
       commandKey = "/reset";
     }
     if (commandKey) {
       const commandAllowed =
         commandPolicy.allowlist.includes(commandKey) ||
-        (commandKey === "/reset" && commandPolicy.allowlist.includes("/clear"));
+        (commandKey === "/reset" &&
+          (commandPolicy.allowlist.includes("/clear") || commandPolicy.allowlist.includes("/new")));
       if (commandPolicy.enabled && !isAdminUser && !commandAllowed) {
         return {
           ok: false,

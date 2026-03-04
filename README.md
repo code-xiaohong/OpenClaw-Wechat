@@ -94,7 +94,7 @@ npm run wecom:selfcheck -- --all-accounts
 | Bot 原生 stream 协议 | ✅ | `msgtype=stream` 刷新与增量回包 |
 | 多账户 | ✅ | `channels.wecom.accounts.<id>` |
 | 发送者授权控制 | ✅ | `allowFrom` + 账户级覆盖 |
-| 命令白名单 | ✅ | `/help` `/status` `/clear` 等 |
+| 命令白名单 | ✅ | `/help` `/status` `/clear` `/new` 等 |
 | 群聊触发策略 | ✅ | 支持 `direct/mention/keyword` 三种模式 |
 | 文本防抖合并 | ✅ | 窗口期内多条消息合并投递 |
 | 异步补发（超时后） | ✅ | transcript 轮询补发最终回复 |
@@ -421,8 +421,8 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | `/help` | 查看帮助 |
 | `/status` | 查看运行状态 |
 | `/clear` | 清理会话（兼容映射到 `/reset`） |
+| `/new` | 新建会话（兼容映射到 `/reset`） |
 | `/reset` | 重置会话 |
-| `/new` | 新建会话（由上层运行时支持） |
 | `/compact` | 压缩会话（由上层运行时支持） |
 
 ### 会话策略

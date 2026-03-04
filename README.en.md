@@ -32,7 +32,7 @@ OpenClaw-Wechat is an OpenClaw channel plugin for Enterprise WeChat (WeCom), wit
 | Native WeCom Bot stream protocol | ✅ | `msgtype=stream` refresh flow |
 | Multi-account support | ✅ | `channels.wecom.accounts.<id>` |
 | Sender allowlist and admin bypass | ✅ | `allowFrom` + `adminUsers` |
-| Command allowlist | ✅ | `/help`, `/status`, `/clear`, etc. |
+| Command allowlist | ✅ | `/help`, `/status`, `/clear`, `/new`, etc. |
 | Group trigger policy | ✅ | mention-required or direct-trigger |
 | Debounce and late-reply fallback | ✅ | better stability under queue/timeout |
 | Outbound proxy for WeCom APIs | ✅ | `outboundProxy` / `WECOM_PROXY` |
@@ -224,8 +224,8 @@ Quoted reply context in Bot mode is also supported (`quote` is prepended into cu
 | `/help` | show help |
 | `/status` | show runtime status |
 | `/clear` | clear session (mapped to `/reset`) |
+| `/new` | new session (mapped to `/reset`) |
 | `/reset` | reset conversation |
-| `/new` | new session (runtime-supported) |
 | `/compact` | compact session (runtime-supported) |
 
 Session key policy: default is one-user-one-session (`wecom:<userid>`).

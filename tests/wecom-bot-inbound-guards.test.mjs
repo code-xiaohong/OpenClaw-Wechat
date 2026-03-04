@@ -90,6 +90,33 @@ test("applyWecomBotCommandAndSenderGuard translates /clear to /reset", () => {
   assert.equal(result.commandBody.startsWith("/reset"), true);
 });
 
+test("applyWecomBotCommandAndSenderGuard translates /new to /reset and allows /new allowlist", () => {
+  const result = applyWecomBotCommandAndSenderGuard({
+    api: {},
+    fromUser: "u1",
+    msgType: "text",
+    commandBody: "/new chat",
+    normalizedFromUser: "u1",
+    resolveWecomCommandPolicy: () => ({
+      enabled: true,
+      adminUsers: [],
+      allowlist: ["/new"],
+      rejectMessage: "cmd blocked",
+    }),
+    resolveWecomAllowFromPolicy: () => ({ allowFrom: ["u1"], rejectMessage: "blocked" }),
+    isWecomSenderAllowed: ({ senderId, allowFrom }) => allowFrom.includes(senderId),
+    extractLeadingSlashCommand: (text) => {
+      if (text.startsWith("/new")) return "/new";
+      if (text.startsWith("/reset")) return "/reset";
+      return "";
+    },
+    buildWecomBotHelpText: () => "help",
+    buildWecomBotStatusText: () => "status",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.commandBody.startsWith("/reset"), true);
+});
+
 test("applyWecomBotCommandAndSenderGuard handles /help and /status directly", () => {
   const common = {
     api: {},

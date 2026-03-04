@@ -67,6 +67,7 @@ export function createWecomCommandHandlers({
 
 可用命令：
 /help - 显示此帮助信息
+/new - 新建会话（兼容命令，等价于 /reset）
 /clear - 重置会话（等价于 /reset）
 /status - 查看系统状态
 

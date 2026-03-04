@@ -100,6 +100,33 @@ test("applyWecomAgentInboundGuards translates /clear and handles command", async
   assert.deepEqual(handled, ["ok"]);
 });
 
+test("applyWecomAgentInboundGuards translates /new to /reset and respects /new allowlist", async () => {
+  const { input, handled } = createCommon({
+    commandBody: "/new topic",
+    resolveWecomCommandPolicy: () => ({
+      enabled: true,
+      adminUsers: [],
+      allowlist: ["/new"],
+      rejectMessage: "command blocked",
+    }),
+    extractLeadingSlashCommand: (text) => {
+      if (String(text).startsWith("/new")) return "/new";
+      if (String(text).startsWith("/reset")) return "/reset";
+      return "";
+    },
+    COMMANDS: {
+      "/reset": async ({ onHandled }) => {
+        onHandled();
+      },
+    },
+  });
+  const result = await applyWecomAgentInboundGuards(input);
+  assert.equal(result.ok, false);
+  assert.equal(result.commandHandled, true);
+  assert.equal(result.commandBody.startsWith("/reset"), true);
+  assert.deepEqual(handled, ["ok"]);
+});
+
 test("applyWecomAgentInboundGuards blocks unallowed command for non-admin", async () => {
   const { input, sent } = createCommon({
     commandBody: "/status",
