@@ -1,6 +1,6 @@
 {
   "name": "@dingxiang-me/openclaw-wechat",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "description": "WeCom (企业微信) channel plugin for OpenClaw (自建应用回调 + 发送 API).",
   "license": "MIT",
@@ -41,6 +41,7 @@
     "test": "npm run test:syntax && node --test tests/*.test.mjs",
     "test:e2e": "node --test tests/e2e/*.test.mjs",
     "test:e2e:remote": "node --test tests/e2e/*.test.mjs",
+    "test:e2e:matrix": "node --test tests/e2e/remote-wecom.matrix.test.mjs",
     "test:e2e:prepare-browser": "bash ./tests/e2e/prepare-browser-sandbox.sh",
     "test:e2e:collect-pdf": "bash ./tests/e2e/collect-browser-pdf.sh",
     "wecom:selfcheck": "node ./scripts/wecom-selfcheck.mjs",

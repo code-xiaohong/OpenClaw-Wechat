@@ -18,6 +18,7 @@ on:
         options:
           - full-smoke
           - compat-smoke
+          - matrix-smoke
           - bot-smoke
           - agent-smoke
           - bot-queue
@@ -78,6 +79,8 @@ jobs:
       WECOM_E2E_POLL_INTERVAL_MS: "1200"
       WECOM_E2E_BOT_LEGACY_URL: ${{ secrets.WECOM_E2E_BOT_LEGACY_URL }}
       WECOM_E2E_AGENT_LEGACY_URL: ${{ secrets.WECOM_E2E_AGENT_LEGACY_URL }}
+      WECOM_BOT_TOKEN: ${{ secrets.WECOM_BOT_TOKEN }}
+      WECOM_BOT_ENCODING_AES_KEY: ${{ secrets.WECOM_BOT_ENCODING_AES_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

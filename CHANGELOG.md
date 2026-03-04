@@ -28,6 +28,8 @@ All notable changes to this project will be documented in this file.
 - 新增兼容矩阵快捷命令：`npm run wecom:e2e:compat`（等价 `wecom:e2e:scenario --scenario compat-smoke`）
 - CI 远端联调增强：`workflow_dispatch` 支持选择 `e2e_scenario`、浏览器准备模式与 PDF 回收参数
 - FAQ 补充：明确 Bot 模式在“微信插件入口”可见性的产品限制，并给出 Agent/Bot 并行方案建议
+- 新增远端矩阵 E2E：`test:e2e:matrix`，覆盖 Bot 回调验签、异常请求、stream-refresh 与重复消息去重链路
+- 新增 `matrix-smoke` 场景：`wecom:e2e:scenario --scenario matrix-smoke` 可直接触发 Bot 协议矩阵回归
 
 ### Changed
 - 多账号默认回调路径自动分配：

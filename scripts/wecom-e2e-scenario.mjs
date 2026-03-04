@@ -99,7 +99,7 @@ function parseArgs(argv) {
   }
 
   const scenario = out.scenario;
-  const valid = new Set(["bot-smoke", "agent-smoke", "full-smoke", "bot-queue", "compat-smoke"]);
+  const valid = new Set(["bot-smoke", "agent-smoke", "full-smoke", "bot-queue", "compat-smoke", "matrix-smoke"]);
   if (!valid.has(scenario)) {
     throw new Error(`Invalid --scenario, expected one of: ${Array.from(valid).join(" | ")}`);
   }
@@ -107,6 +107,9 @@ function parseArgs(argv) {
     throw new Error("Invalid --browser-prepare-mode, expected one of: check | install | off");
   }
   if ((scenario === "bot-smoke" || scenario === "full-smoke" || scenario === "bot-queue") && !String(out.botUrl).trim()) {
+    throw new Error("Missing required argument: --bot-url <https://.../wecom/bot/callback>");
+  }
+  if (scenario === "matrix-smoke" && !String(out.botUrl).trim()) {
     throw new Error("Missing required argument: --bot-url <https://.../wecom/bot/callback>");
   }
   if ((scenario === "agent-smoke" || scenario === "full-smoke") && !String(out.agentUrl).trim()) {
@@ -129,7 +132,7 @@ function printHelp() {
   console.log(`OpenClaw-Wechat scenario E2E
 
 Usage:
-  npm run wecom:e2e:scenario -- --scenario <bot-smoke|agent-smoke|full-smoke|bot-queue|compat-smoke> [options]
+  npm run wecom:e2e:scenario -- --scenario <bot-smoke|agent-smoke|full-smoke|bot-queue|compat-smoke|matrix-smoke> [options]
 
 Scenarios:
   bot-smoke    Run remote bot E2E once
@@ -137,6 +140,7 @@ Scenarios:
   full-smoke   Run remote all-in-one E2E (agent + bot + account selfcheck)
   bot-queue    Run bot E2E twice with same sender to validate queue/stream recovery
   compat-smoke Run compatibility matrix on new + legacy webhook URLs
+  matrix-smoke Run remote bot protocol matrix E2E test suite
 
 Options:
   --bot-url <url>          Bot callback URL (required for bot/full/bot-queue)
@@ -163,11 +167,14 @@ Env shortcuts:
 `);
 }
 
-async function runNodeScript(script, args = []) {
+async function runNodeScript(script, args = [], extraEnv = {}) {
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script, ...args], {
       stdio: "inherit",
-      env: process.env,
+      env: {
+        ...process.env,
+        ...extraEnv,
+      },
     });
     child.on("error", reject);
     child.on("exit", (code) => {
@@ -265,6 +272,33 @@ async function main() {
         args: buildRemoteE2eArgs({ mode: "bot", options: legacyBotOptions, content: "/status" }),
       });
     }
+  } else if (args.scenario === "matrix-smoke") {
+    const matrixToken = pickFirstEnv("WECOM_BOT_TOKEN", "WECOM_E2E_TOKEN", "E2E_WECOM_TOKEN");
+    const matrixAesKey = pickFirstEnv(
+      "WECOM_BOT_ENCODING_AES_KEY",
+      "WECOM_E2E_ENCODING_AES_KEY",
+      "E2E_WECOM_ENCODING_AES_KEY",
+    );
+    if (!matrixToken || !matrixAesKey) {
+      throw new Error(
+        "matrix-smoke requires bot crypto env: WECOM_BOT_TOKEN and WECOM_BOT_ENCODING_AES_KEY (or compatible E2E_WECOM_* vars)",
+      );
+    }
+    steps.push({
+      label: "Matrix smoke: Bot protocol matrix",
+      script: "--test",
+      args: ["tests/e2e/remote-wecom.matrix.test.mjs"],
+      env: {
+        WECOM_E2E_MATRIX_ENABLE: "1",
+        WECOM_E2E_BOT_URL: args.botUrl,
+        WECOM_BOT_TOKEN: matrixToken,
+        WECOM_BOT_ENCODING_AES_KEY: matrixAesKey,
+        WECOM_E2E_MATRIX_TIMEOUT_MS: String(args.timeoutMs),
+        WECOM_E2E_MATRIX_POLL_COUNT: String(args.pollCount),
+        WECOM_E2E_MATRIX_POLL_INTERVAL_MS: String(args.pollIntervalMs),
+        ...(args.fromUser ? { WECOM_E2E_FROM_USER: args.fromUser } : {}),
+      },
+    });
   }
 
   let index = 0;
@@ -273,7 +307,7 @@ async function main() {
     index += 1;
     console.log(`[${index}/${total}] ${step.label}`);
     // eslint-disable-next-line no-await-in-loop
-    await runNodeScript(step.script, step.args);
+    await runNodeScript(step.script, step.args, step.env || {});
   }
   console.log(`Scenario completed: ${args.scenario}`);
 }

@@ -539,6 +539,7 @@ npm run wecom:bot:selfcheck
 |---|---|
 | `npm test` | 语法与单测 |
 | `WECOM_E2E_ENABLE=1 npm run test:e2e:remote` | 运行远程 E2E 测试（默认跳过；支持 `WECOM_E2E_*` 与兼容 `E2E_WECOM_*` 两套变量） |
+| `WECOM_E2E_MATRIX_ENABLE=1 npm run test:e2e:matrix` | 运行远程矩阵 E2E（签名验签/异常请求/stream refresh/去重链路） |
 | `npm run test:e2e:prepare-browser` | 远程浏览器沙箱就绪检查（可选自动安装 Chromium） |
 | `npm run test:e2e:collect-pdf` | 收集远端浏览器沙箱中的 PDF 产物到本地 |
 | `npm run wecom:selfcheck -- --all-accounts` | 配置+网络体检 |
@@ -549,6 +550,7 @@ npm run wecom:bot:selfcheck
 | `WECOM_E2E_BOT_URL=<...> WECOM_E2E_AGENT_URL=<...> npm run wecom:remote:e2e -- --mode all` | 用环境变量驱动远端 E2E（兼容旧 `E2E_WECOM_*`） |
 | `npm run wecom:e2e:scenario -- --scenario full-smoke --agent-url <公网Agent回调> --bot-url <公网Bot回调>` | 场景化 E2E（预置 smoke/queue 场景） |
 | `npm run wecom:e2e:scenario -- --scenario compat-smoke --agent-url <新Agent回调> --agent-legacy-url <旧Agent回调> --bot-url <新Bot回调> --bot-legacy-url <旧Bot回调>` | 兼容矩阵验证（新旧回调地址都跑一遍） |
+| `npm run wecom:e2e:scenario -- --scenario matrix-smoke --bot-url <公网Bot回调>` | Bot 协议矩阵验证（验签/异常请求/stream-refresh/去重；需 `WECOM_BOT_TOKEN/WECOM_BOT_ENCODING_AES_KEY`） |
 | `npm run wecom:e2e:compat -- --agent-url <新Agent回调> --agent-legacy-url <旧Agent回调> --bot-url <新Bot回调> --bot-legacy-url <旧Bot回调>` | 兼容矩阵快捷命令（等价 `--scenario compat-smoke`） |
 | `npm run wecom:e2e:full -- --agent-url <公网Agent回调> --bot-url <公网Bot回调>` | 一键 full-smoke（默认带 `--prepare-browser --collect-pdf`） |
 | `GitHub Actions -> CI -> Run workflow` | 在仓库 CI 手动触发远程 E2E：设置 `run_remote_e2e=true`，可选 `e2e_scenario`（含 `compat-smoke`）与浏览器参数 |

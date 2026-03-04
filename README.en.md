@@ -321,6 +321,7 @@ npm run wecom:bot:selfcheck
 |---|---|
 | `npm test` | syntax + tests |
 | `WECOM_E2E_ENABLE=1 npm run test:e2e:remote` | run remote E2E tests (skipped by default; supports both `WECOM_E2E_*` and legacy `E2E_WECOM_*` env sets) |
+| `WECOM_E2E_MATRIX_ENABLE=1 npm run test:e2e:matrix` | run remote matrix E2E (signature/negative requests/stream refresh/dedupe) |
 | `npm run test:e2e:prepare-browser` | check remote browser sandbox readiness (optional Chromium auto-install) |
 | `npm run test:e2e:collect-pdf` | collect browser-generated PDFs from remote sandbox to local artifacts |
 | `npm run wecom:selfcheck -- --all-accounts` | config/network self-check |
@@ -331,6 +332,7 @@ npm run wecom:bot:selfcheck
 | `WECOM_E2E_BOT_URL=<...> WECOM_E2E_AGENT_URL=<...> npm run wecom:remote:e2e -- --mode all` | env-driven remote E2E (also compatible with legacy `E2E_WECOM_*`) |
 | `npm run wecom:e2e:scenario -- --scenario full-smoke --agent-url <public-agent-callback> --bot-url <public-bot-callback>` | scenario-based E2E (preset smoke/queue workflows) |
 | `npm run wecom:e2e:scenario -- --scenario compat-smoke --agent-url <new-agent-url> --agent-legacy-url <legacy-agent-url> --bot-url <new-bot-url> --bot-legacy-url <legacy-bot-url>` | compatibility matrix run across new + legacy webhook endpoints |
+| `npm run wecom:e2e:scenario -- --scenario matrix-smoke --bot-url <public-bot-callback>` | bot protocol matrix checks (signature/negative requests/stream-refresh/dedupe; requires `WECOM_BOT_TOKEN/WECOM_BOT_ENCODING_AES_KEY`) |
 | `npm run wecom:e2e:compat -- --agent-url <new-agent-url> --agent-legacy-url <legacy-agent-url> --bot-url <new-bot-url> --bot-legacy-url <legacy-bot-url>` | compatibility matrix shortcut command (same as `--scenario compat-smoke`) |
 | `npm run wecom:e2e:full -- --agent-url <public-agent-callback> --bot-url <public-bot-callback>` | one-shot full-smoke (pre-enabled `--prepare-browser --collect-pdf`) |
 | `GitHub Actions -> CI -> Run workflow` | trigger remote E2E in CI with `run_remote_e2e=true`; optionally pick `e2e_scenario` (including `compat-smoke`) and browser options |
