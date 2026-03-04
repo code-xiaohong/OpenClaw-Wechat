@@ -59,6 +59,7 @@ test("/status command sends status text", async () => {
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /插件版本：0\.5\.3/);
   assert.match(sent[0].text, /命名 Webhook 目标/);
+  assert.match(sent[0].text, /微信插件入口联系人：Agent 模式可见/);
 });
 
 test("buildWecomBotStatusText renders bot webhook and features", () => {
@@ -67,4 +68,5 @@ test("buildWecomBotStatusText renders bot webhook and features", () => {
   assert.match(text, /企业微信 AI 机器人/);
   assert.match(text, /Bot Webhook：\/wecom\/bot\/callback/);
   assert.match(text, /回包兜底链路/);
+  assert.match(text, /微信插件入口联系人：Bot 模式通常不显示/);
 });

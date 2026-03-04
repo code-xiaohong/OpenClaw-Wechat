@@ -65,6 +65,7 @@ export function buildAgentStatusText({
   const dynamicAgentPolicyLine = dynamicAgentPolicy.enabled
     ? `✅ 动态 Agent 路由已启用（mode=${dynamicAgentPolicy.mode}，用户映射 ${Object.keys(dynamicAgentPolicy.userMap || {}).length}，群映射 ${Object.keys(dynamicAgentPolicy.groupMap || {}).length}）`
     : "ℹ️ 动态 Agent 路由未启用";
+  const entryVisibilityLine = "✅ 微信插件入口联系人：Agent 模式可见（自建应用）";
 
   return `📊 系统状态
 
@@ -92,6 +93,7 @@ ${streamManagerPolicyLine}
 ${webhookBotPolicyLine}
 ${webhookTargetsLine}
 ${dynamicAgentPolicyLine}
+${entryVisibilityLine}
 ${proxyEnabled ? "✅ WeCom 出站代理已启用" : "ℹ️ WeCom 出站代理未启用"}
 ${voiceStatusLine}`;
 }
@@ -139,6 +141,7 @@ export function buildBotStatusText({
   const dynamicAgentPolicyLine = dynamicAgentPolicy.enabled
     ? `✅ 动态 Agent 路由已启用（mode=${dynamicAgentPolicy.mode}，用户映射 ${Object.keys(dynamicAgentPolicy.userMap || {}).length}，群映射 ${Object.keys(dynamicAgentPolicy.groupMap || {}).length}）`
     : "ℹ️ 动态 Agent 路由未启用";
+  const entryVisibilityLine = "ℹ️ 微信插件入口联系人：Bot 模式通常不显示（请通过机器人会话/群聊入口触发）";
   return `📊 系统状态
 
 渠道：企业微信 AI 机器人 (Bot)
@@ -155,7 +158,8 @@ ${fallbackPolicyLine}
 ${streamManagerPolicyLine}
 ${webhookBotPolicyLine}
 ${webhookTargetsLine}
-${dynamicAgentPolicyLine}`;
+${dynamicAgentPolicyLine}
+${entryVisibilityLine}`;
 }
 
 export function buildWecomBotHelpText() {

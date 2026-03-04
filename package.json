@@ -33,6 +33,10 @@
         "qiwei",
         "wxwork"
       ]
+    },
+    "install": {
+      "defaultChoice": "npm",
+      "npmSpec": "@dingxiang-me/openclaw-wechat"
     }
   },
   "scripts": {

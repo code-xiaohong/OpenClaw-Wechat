@@ -359,6 +359,7 @@ Recommended setup:
 1. Need stable direct entry: prefer Agent mode.
 2. Need group notifications/conversation: prefer Webhook Bot / Bot mode.
 3. Need both: run Agent (entry) + Bot (group capability) together.
+4. Run `npm run wecom:bot:selfcheck` and check `bot.entry.visibility` to confirm this is expected product behavior rather than a plugin fault.
 
 ### Why does `curl https://<domain>/wecom/callback` return WebUI instead of webhook health text?
 That is a routing issue. `GET /wecom/callback` (without `echostr`) should return plain text `wecom webhook ok`.

@@ -342,6 +342,13 @@ async function runBotE2E({ config, args, configPath }) {
     ),
   );
   checks.push(makeCheck("config.bot.webhookPath", Boolean(botConfig.webhookPath), `path=${botConfig.webhookPath}`));
+  checks.push(
+    makeCheck(
+      "bot.entry.visibility",
+      true,
+      "Bot 模式在“微信插件入口”通常不会显示为联系人；建议通过机器人会话入口或群聊触发。",
+    ),
+  );
 
   let aesKeyValid = false;
   if (botConfig.encodingAesKey) {
