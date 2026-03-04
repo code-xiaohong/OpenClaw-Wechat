@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 - 新增 legacy 兼容：`dm.allowFrom` 与 `commands.blockMessage`
 - 新增 legacy `name` 字段兼容（渠道与账户级）
 - 改进命令策略：当配置了 `commands.allowlist`（或 `commandAllowlist`）且未显式关闭时，自动启用命令白名单
+- 修复账户级 `dm.allowFrom` 兼容：`accounts.<id>.dm.allowFrom` 在归一化后保持生效
 
 ### Changed
 - 多账号默认回调路径自动分配：

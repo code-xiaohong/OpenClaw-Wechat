@@ -136,6 +136,22 @@ test("normalizeAccountConfig keeps explicit account name", () => {
   assert.equal(normalized.name, "Sales Bot");
 });
 
+test("normalizeAccountConfig supports account-level dm.allowFrom alias", () => {
+  const normalized = normalizeAccountConfig({
+    raw: {
+      corpId: "ww_ops",
+      corpSecret: "ops-secret",
+      agentId: 1000077,
+      dm: {
+        allowFrom: ["wecom:alice", "user:bob"],
+      },
+    },
+    accountId: "ops",
+    normalizeWecomWebhookTargetMap,
+  });
+  assert.deepEqual(normalized.allowFrom, ["wecom:alice", "user:bob"]);
+});
+
 test("readAccountConfigFromEnv auto-assigns non-default webhookPath when missing", () => {
   const processEnvStub = {
     WECOM_SALES_CORP_ID: "ww_sales",

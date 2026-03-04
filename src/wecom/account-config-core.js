@@ -55,7 +55,7 @@ export function normalizeAccountConfig({ raw, accountId, normalizeWecomWebhookTa
   const name = pickFirstNonEmptyString(raw.name, normalizedId);
   const outboundProxy = String(raw.outboundProxy ?? raw.proxyUrl ?? raw.proxy ?? "").trim();
   const webhooks = normalizeWecomWebhookTargetMap(raw.webhooks);
-  const allowFrom = raw.allowFrom;
+  const allowFrom = raw.allowFrom ?? raw.dm?.allowFrom;
   const allowFromRejectMessage = String(raw.allowFromRejectMessage ?? raw.rejectUnauthorizedMessage ?? "").trim();
 
   if (!corpId || !corpSecret || !agentId) {

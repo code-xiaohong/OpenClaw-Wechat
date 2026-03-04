@@ -79,3 +79,32 @@ test("createWecomAccountRegistry supports legacy inline default account block", 
   assert.equal(account?.callbackToken, "default-callback-token");
   assert.equal(account?.webhookPath, "/wecom/callback");
 });
+
+test("createWecomAccountRegistry keeps account dm.allowFrom in normalized config", () => {
+  const registry = createWecomAccountRegistry({
+    normalizeWecomWebhookTargetMap,
+    resolveWecomProxyConfig: () => undefined,
+    processEnv: {},
+  });
+  const cfg = {
+    channels: {
+      wecom: {
+        accounts: {
+          ops: {
+            corpId: "ww_ops",
+            corpSecret: "ops-secret",
+            agentId: 1000011,
+            dm: {
+              allowFrom: ["wecom:alice", "bob"],
+            },
+          },
+        },
+      },
+    },
+  };
+  const account = registry.getWecomConfig({
+    api: { config: cfg },
+    accountId: "ops",
+  });
+  assert.deepEqual(account?.allowFrom, ["wecom:alice", "bob"]);
+});
