@@ -294,7 +294,7 @@ function buildPluginChecks(config) {
   return checks;
 }
 
-function diagnoseLocalBotWebhookHealth({ status, rawBody, webhookPath, gatewayPort }) {
+function diagnoseLocalBotWebhookHealth({ status, rawBody, webhookPath, gatewayPort, location = "" }) {
   const body = String(rawBody ?? "");
   const preview = body.slice(0, 120);
   const normalizedBody = body.trim().toLowerCase();
@@ -312,6 +312,16 @@ function diagnoseLocalBotWebhookHealth({ status, rawBody, webhookPath, gatewayPo
   if (status === 404) {
     reason = "route-not-found";
     hints.push(`路径 ${webhookPath} 未命中 Bot 回调路由`);
+  } else if (status === 401 || status === 403) {
+    reason = "gateway-auth";
+    hints.push("Bot 回调路径被 Gateway Auth / Zero Trust / 反向代理鉴权拦截");
+    hints.push("企业微信 Bot 回调不能依赖 Authorization、Cookie 或人工登录");
+    hints.push("为 /wecom/*（以及 legacy /webhooks/wecom*）单独放行，或使用独立回调域名/端口");
+  } else if ([301, 302, 303, 307, 308].includes(status)) {
+    reason = "redirect-auth";
+    hints.push("Bot 回调路径发生了重定向，通常被登录页、SSO 或前端路由接管");
+    if (location) hints.push(`重定向目标：${location}`);
+    hints.push("请让 /wecom/*（以及 legacy /webhooks/wecom*）直接反代到 OpenClaw 网关，不要跳转到登录页或前端应用");
   } else if (status === 502 || status === 503 || status === 504) {
     reason = "gateway-unreachable";
     hints.push(`网关 ${gatewayPort} 端口不可达或反向代理后端异常`);
@@ -330,6 +340,7 @@ function diagnoseLocalBotWebhookHealth({ status, rawBody, webhookPath, gatewayPo
       reason,
       webhookPath,
       gatewayPort,
+      location: location || null,
       hints,
     },
   };
@@ -589,13 +600,18 @@ async function runBotE2E({ config, args, configPath, accountId }) {
   }
 
   try {
-    const healthResponse = await fetchWithTimeout(endpoint, { method: "GET" }, Math.min(args.timeoutMs, 4000));
+    const healthResponse = await fetchWithTimeout(
+      endpoint,
+      { method: "GET", redirect: "manual" },
+      Math.min(args.timeoutMs, 4000),
+    );
     const healthBody = await healthResponse.text();
     const diagnosed = diagnoseLocalBotWebhookHealth({
       status: healthResponse.status,
       rawBody: healthBody,
       webhookPath: botConfig.webhookPath,
       gatewayPort: botConfig.gatewayPort,
+      location: healthResponse.headers.get("location") || "",
     });
     checks.push(
       makeCheck(

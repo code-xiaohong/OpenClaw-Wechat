@@ -532,7 +532,7 @@ function discoverAccountIds(config) {
   return ordered;
 }
 
-async function fetchJsonWithTimeout(url, timeoutMs, proxyUrl = "") {
+async function fetchJsonWithTimeout(url, timeoutMs, proxyUrl = "", fetchOptions = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -541,6 +541,7 @@ async function fetchJsonWithTimeout(url, timeoutMs, proxyUrl = "") {
       attachProxyDispatcher(
         url,
         {
+          ...fetchOptions,
           signal: controller.signal,
         },
         proxyUrl,
@@ -553,13 +554,18 @@ async function fetchJsonWithTimeout(url, timeoutMs, proxyUrl = "") {
     } catch {
       json = { raw: text };
     }
+    if (json && typeof json === "object" && !Array.isArray(json)) {
+      json.headers = {
+        location: res.headers.get("location") || "",
+      };
+    }
     return { ok: res.ok, status: res.status, json };
   } finally {
     clearTimeout(timer);
   }
 }
 
-function diagnoseLocalWebhookHealth({ status, raw, webhookPath, gatewayPort }) {
+function diagnoseLocalWebhookHealth({ status, raw, webhookPath, gatewayPort, location = "" }) {
   const body = String(raw ?? "");
   const preview = body.slice(0, 120);
   const normalizedBody = body.trim().toLowerCase();
@@ -577,6 +583,16 @@ function diagnoseLocalWebhookHealth({ status, raw, webhookPath, gatewayPort }) {
   if (status === 404) {
     reason = "route-not-found";
     hints.push(`路径 ${webhookPath} 未命中插件路由`);
+  } else if (status === 401 || status === 403) {
+    reason = "gateway-auth";
+    hints.push("回调路径被 Gateway Auth / Zero Trust / 反向代理鉴权拦截");
+    hints.push("企业微信回调与健康探测必须直达 webhook 路径，不能要求 Authorization、Cookie 或交互登录");
+    hints.push("为 /wecom/*（以及 legacy /webhooks/app*）单独放行，或使用独立回调域名/端口");
+  } else if ([301, 302, 303, 307, 308].includes(status)) {
+    reason = "redirect-auth";
+    hints.push("回调路径发生了重定向，通常被登录页、SSO 或前端路由接管");
+    if (location) hints.push(`重定向目标：${location}`);
+    hints.push("请让 /wecom/*（以及 legacy /webhooks/app*）直接反代到 OpenClaw 网关，不要跳转到登录页或前端应用");
   } else if (status === 502 || status === 503 || status === 504) {
     reason = "gateway-unreachable";
     hints.push(`网关 ${gatewayPort} 端口不可达或反向代理后端异常`);
@@ -595,6 +611,7 @@ function diagnoseLocalWebhookHealth({ status, raw, webhookPath, gatewayPort }) {
       reason,
       webhookPath,
       gatewayPort,
+      location: location || null,
       hints,
     },
   };
@@ -751,13 +768,16 @@ async function runAccountChecks({ config, accountId, args }) {
     const gatewayPort = asNumber(config?.gateway?.port, 8885);
     const localWebhookUrl = `http://127.0.0.1:${gatewayPort}${webhookPath}`;
     try {
-      const resp = await fetchJsonWithTimeout(localWebhookUrl, Math.min(args.timeoutMs, 4000));
+      const resp = await fetchJsonWithTimeout(localWebhookUrl, Math.min(args.timeoutMs, 4000), "", {
+        redirect: "manual",
+      });
       const raw = resp.json?.raw ?? "";
       const diagnosed = diagnoseLocalWebhookHealth({
         status: resp.status,
         raw,
         webhookPath,
         gatewayPort,
+        location: typeof resp.json?.headers?.location === "string" ? resp.json.headers.location : "",
       });
       checks.push(
         makeCheck(

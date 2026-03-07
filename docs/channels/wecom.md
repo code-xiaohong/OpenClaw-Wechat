@@ -40,9 +40,57 @@ Recommended:
 
 - `https://<your-domain>/wecom/callback`
 
+Public callback checklist:
+
+- `GET /wecom/callback` should return `wecom webhook ok`
+- `GET /wecom/bot/callback` should return `wecom bot webhook ok`
+- `401/403` means the path is auth-gated by Gateway Auth / Zero Trust / reverse proxy
+- `301/302/307/308` means the path is redirected to login / SSO / frontend
+- `200 + HTML` means the request hit WebUI/frontend instead of the webhook route
+- Exempt `/wecom/*`, `/webhooks/app*`, and `/webhooks/wecom*` from auth if your public edge uses login/token enforcement
+
+Recommended reverse-proxy rule:
+
+```nginx
+location /wecom/ {
+  proxy_pass http://127.0.0.1:8885;
+}
+```
+
 Named webhook targets (optional):
 
 - Configure `channels.wecom.webhooks` (or `accounts.<id>.webhooks`) and send to `webhook:<name>`.
+
+Heartbeat delivery example (OpenClaw `2026.3.2`):
+
+```json
+{
+  "channels": {
+    "wecom": {
+      "webhooks": {
+        "ops": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "heartbeat": {
+        "every": "30m",
+        "target": "wecom",
+        "to": "webhook:ops"
+      }
+    }
+  }
+}
+```
+
+Useful ops commands:
+
+```bash
+openclaw system heartbeat last
+openclaw config get agents.defaults.heartbeat
+openclaw status --deep
+```
 
 ## WeCom Doc Tool
 

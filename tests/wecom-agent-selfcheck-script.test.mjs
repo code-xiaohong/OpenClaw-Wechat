@@ -196,3 +196,49 @@ test("wecom-agent-selfcheck rejects --url with --all-accounts", async () => {
   assert.equal(result.code, 1);
   assert.match(result.stderr, /cannot be used with --all-accounts/i);
 });
+
+test("wecom-agent-selfcheck reports gateway-auth hint on webhook health", async (t) => {
+  const agent = buildAgentBlock(1001, { webhookPath: "/wecom/callback" });
+  const server = createServer((req, res) => {
+    if (req.method === "GET") {
+      res.statusCode = 401;
+      res.end("unauthorized");
+      return;
+    }
+    res.statusCode = 403;
+    res.end("forbidden");
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  assert.ok(port > 0);
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wecom-agent-selfcheck-"));
+  const configPath = path.join(tempDir, "openclaw.json");
+  const config = {
+    gateway: { port },
+    channels: {
+      wecom: {
+        agent,
+      },
+    },
+  };
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const result = await runAgentSelfcheck([
+    "--config",
+    configPath,
+    "--url",
+    `http://127.0.0.1:${port}/wecom/callback`,
+    "--json",
+  ]);
+
+  assert.equal(result.code, 1);
+  const report = JSON.parse(result.stdout);
+  const healthCheck = report?.accounts?.[0]?.checks?.find((item) => item?.name === "e2e.health.get");
+  assert.ok(healthCheck);
+  assert.equal(healthCheck.ok, false);
+  assert.equal(healthCheck?.data?.reason, "gateway-auth");
+});

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-03-08
+
+### Added
+- 新增公网回调 / Gateway Auth 运维文档：补充反向代理、Cloudflare Tunnel、认证豁免与 `curl` 期望返回值
+- 新增 Webhook / Heartbeat 运维手册：补充命名 webhook 配置、`openclaw message send` / `openclaw agent --deliver` 用法，以及 OpenClaw `agents.defaults.heartbeat -> target: "wecom" -> to: "webhook:<name>"` 配置示例
+- 新增本地链路级回归测试：覆盖 Bot mixed 多图入站到内容构建，以及 Agent 两条加密文本回调经过防抖合并后只触发一次处理
+
+### Changed
+- `wecom:selfcheck`、`wecom:agent:selfcheck`、`wecom:bot:selfcheck` 增强公网回调诊断，显式识别 `gateway-auth` / `redirect-auth`
+- README（中英文）与渠道文档补充公网回调、反代认证与 Heartbeat 运维说明
+
 ## [1.9.2] - 2026-03-08
 
 ### Added

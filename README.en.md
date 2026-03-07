@@ -21,6 +21,8 @@ OpenClaw-Wechat is an OpenClaw channel plugin for Enterprise WeChat (WeCom), wit
 - [Capability Matrix](#capability-matrix)
 - [Commands and Session Policy](#commands-and-session-policy)
 - [Environment Variables](#environment-variables)
+- [Public Callbacks and Gateway Auth](#public-callbacks-and-gateway-auth)
+- [Webhook and Heartbeat Ops](#webhook-and-heartbeat-ops)
 - [Coexistence with Other Channels](#coexistence-with-other-channels)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
@@ -422,6 +424,201 @@ Outbound target formats:
 |---|---|
 | `WECOM_VOICE_TRANSCRIBE_*` | local whisper/whisper-cli settings |
 
+## Public Callbacks and Gateway Auth
+
+### Goal
+
+WeCom must reach the OpenClaw webhook route directly.  
+The callback path must not be intercepted by:
+
+- Gateway auth / token walls
+- SSO or login redirects
+- frontend/WebUI routing
+- the wrong upstream service
+
+### Recommended layout
+
+| Scenario | Recommendation |
+|---|---|
+| Single domain | Route `/wecom/*`, legacy `/webhooks/app*`, and `/webhooks/wecom*` directly to the OpenClaw gateway port |
+| Gateway Auth / Zero Trust enabled | Exempt those webhook paths from auth; no Authorization/Cookie/login should be required |
+| Shared frontend + gateway domain | Keep frontend routes separate; do not let `/wecom/*` fall into the SPA |
+| Most stable setup | Use a dedicated subdomain for WeCom callbacks |
+
+### Minimum checks
+
+| Probe | Expected result |
+|---|---|
+| `curl -i http://127.0.0.1:8885/wecom/callback` | `200` + `wecom webhook ok` |
+| `curl -i http://127.0.0.1:8885/wecom/bot/callback` | `200` + `wecom bot webhook ok` |
+| `curl -i https://your-domain/wecom/callback` | same as local; no HTML, no `401/403`, no redirect |
+| `curl -i https://your-domain/wecom/bot/callback` | same as local; no HTML, no `401/403`, no redirect |
+
+### What common responses mean
+
+| Response | Meaning | Fix |
+|---|---|---|
+| `200` + `wecom webhook ok` / `wecom bot webhook ok` | webhook route is healthy | continue with URL verification and WeCom-side setup |
+| `200` + HTML | request hit frontend/WebUI | proxy `/wecom/*` directly to the gateway |
+| `401/403` | callback path is auth-gated | bypass auth for webhook paths |
+| `301/302/307/308` | callback path is redirected to login/SSO/frontend | remove redirect and proxy directly to OpenClaw |
+| `502/503/504` | gateway upstream is down/unreachable | fix gateway health/upstream first |
+| `404` | wrong path or webhook route not registered | verify `webhookPath`, plugin load state, and legacy aliases |
+
+### Nginx example
+
+```nginx
+server {
+  listen 443 ssl http2;
+  server_name wecom.example.com;
+
+  location /wecom/ {
+    proxy_pass http://127.0.0.1:8885;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+  location /webhooks/app {
+    proxy_pass http://127.0.0.1:8885;
+  }
+
+  location /webhooks/wecom {
+    proxy_pass http://127.0.0.1:8885;
+  }
+}
+```
+
+### Cloudflare Tunnel example
+
+```yaml
+ingress:
+  - hostname: wecom.example.com
+    service: http://127.0.0.1:8885
+  - service: http_status:404
+```
+
+### Self-check
+
+```bash
+npm run wecom:selfcheck -- --all-accounts
+npm run wecom:agent:selfcheck -- --all-accounts
+npm run wecom:bot:selfcheck -- --all-accounts
+```
+
+Self-check now distinguishes:
+
+- `route-not-found`
+- `html-fallback`
+- `gateway-auth`
+- `redirect-auth`
+- `gateway-unreachable`
+
+## Webhook and Heartbeat Ops
+
+### Typical use cases
+
+| Need | Recommended path |
+|---|---|
+| Send a one-off group notice | `openclaw message send --channel wecom --target webhook:<name>` |
+| Deliver an agent result into a WeCom group | `openclaw agent --deliver --reply-channel wecom --reply-to webhook:<name>` |
+| Send periodic summaries/checks | OpenClaw `agents.defaults.heartbeat` with `target: "wecom"` and `to: "webhook:<name>"` |
+
+### Configure named webhook targets
+
+```json
+{
+  "channels": {
+    "wecom": {
+      "webhooks": {
+        "ops": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx",
+        "dev": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=yyy"
+      }
+    }
+  }
+}
+```
+
+For multi-account setups you can also place them under `channels.wecom.accounts.<id>.webhooks`.
+
+### Direct send
+
+```bash
+openclaw message send --channel wecom --target webhook:ops --message "Service has recovered"
+```
+
+### Deliver an agent turn into the group
+
+```bash
+openclaw agent \
+  --message "Summarize today's alerts" \
+  --deliver \
+  --reply-channel wecom \
+  --reply-to webhook:ops
+```
+
+### Heartbeat delivery to WeCom webhook
+
+On this machine, OpenClaw `2026.3.2` supports heartbeat delivery by channel and target.  
+For a WeCom webhook target:
+
+```json
+{
+  "channels": {
+    "wecom": {
+      "webhooks": {
+        "ops": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "heartbeat": {
+        "every": "30m",
+        "target": "wecom",
+        "to": "webhook:ops",
+        "prompt": "Check gateway health, recent alerts, and WeCom channel status; if all is healthy, reply in three lines or less.",
+        "ackMaxChars": 300
+      }
+    }
+  }
+}
+```
+
+Multi-account webhook delivery can add:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "heartbeat": {
+        "target": "wecom",
+        "to": "webhook:ops",
+        "accountId": "sales"
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- `target: "wecom"` selects the WeCom channel.
+- `to: "webhook:ops"` selects the named webhook target inside that channel.
+- `accountId` is only needed for multi-account routing.
+- If `target` is omitted, heartbeat still runs but does not deliver externally.
+
+Useful ops commands:
+
+```bash
+openclaw system heartbeat last
+openclaw config get agents.defaults.heartbeat
+openclaw status --deep
+openclaw logs --follow
+openclaw system event --mode now --text "Run the next ops heartbeat now"
+```
+
 ## Coexistence with Other Channels
 
 Recommended hardening for Telegram/Feishu/WeCom together:
@@ -438,6 +635,8 @@ See [`docs/troubleshooting/coexistence.md`](./docs/troubleshooting/coexistence.m
 |---|---|---|
 | Callback verification failed | callback URL reachability | URL/Token/AES mismatch |
 | `curl /wecom/callback` returns WebUI page | reverse-proxy path routing | `/wecom/*` path is forwarded to frontend/static site instead of OpenClaw gateway |
+| `curl https://your-domain/wecom/callback` returns `401/403` | gateway auth / zero-trust auth | webhook path requires login or token |
+| `curl https://your-domain/wecom/callback` returns `301/302/307/308` | login redirect / SSO / frontend route | webhook path is redirected away from OpenClaw |
 | Inbound received but no reply | gateway logs + dispatch status | timeout, queueing, policy block |
 | Bot image parse failed | `wecom(bot): failed to fetch image url` | expired URL/non-image stream |
 | Voice transcription failed | local command/model path | whisper/ffmpeg environment issue |

@@ -271,3 +271,66 @@ test("wecom-bot-selfcheck reports html-fallback hint on webhook health", async (
   assert.equal(healthCheck.ok, false);
   assert.equal(healthCheck?.data?.reason, "html-fallback");
 });
+
+test("wecom-bot-selfcheck reports redirect-auth hint on webhook health", async (t) => {
+  const token = "bot-selfcheck-token";
+  const aesKey = Buffer.alloc(32, 11).toString("base64").replace(/=+$/g, "");
+  const server = createServer((req, res) => {
+    if (req.method === "GET") {
+      res.statusCode = 302;
+      res.setHeader("Location", "https://login.example.invalid/wecom");
+      res.end("redirect");
+      return;
+    }
+    res.statusCode = 401;
+    res.end("unauthorized");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  assert.ok(port > 0);
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "wecom-bot-selfcheck-"));
+  const configPath = path.join(tempDir, "openclaw.json");
+  const config = {
+    gateway: { port },
+    plugins: {
+      allow: ["openclaw-wechat"],
+      entries: {
+        "openclaw-wechat": { enabled: true },
+      },
+    },
+    channels: {
+      wecom: {
+        bot: {
+          enabled: true,
+          token,
+          encodingAesKey: aesKey,
+          webhookPath: "/wecom/bot/callback",
+        },
+      },
+    },
+  };
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+
+  const result = await runBotSelfcheck([
+    "--config",
+    configPath,
+    "--url",
+    `http://127.0.0.1:${port}/wecom/bot/callback`,
+    "--poll-count",
+    "1",
+    "--poll-interval-ms",
+    "10",
+    "--json",
+  ]);
+  assert.equal(result.code, 1);
+  const report = JSON.parse(result.stdout);
+  const accountReport = report?.accounts?.[0];
+  const healthCheck = accountReport?.checks?.find((item) => item?.name === "local.webhook.health");
+  assert.ok(healthCheck);
+  assert.equal(healthCheck.ok, false);
+  assert.equal(healthCheck?.data?.reason, "redirect-auth");
+  assert.equal(healthCheck?.data?.location, "https://login.example.invalid/wecom");
+});

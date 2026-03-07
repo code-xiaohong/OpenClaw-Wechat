@@ -220,7 +220,7 @@ function makeCheck(name, ok, detail, data = null) {
   return { name, ok: Boolean(ok), detail: String(detail ?? ""), data };
 }
 
-function diagnoseLocalHealthResponse({ status, body, endpoint }) {
+function diagnoseLocalHealthResponse({ status, body, endpoint, location = "" }) {
   const raw = String(body ?? "");
   const preview = raw.slice(0, 120);
   const healthy = status === 200 && raw.toLowerCase().includes("wecom webhook");
@@ -237,6 +237,16 @@ function diagnoseLocalHealthResponse({ status, body, endpoint }) {
   if (status === 404) {
     reason = "route-not-found";
     hints.push("回调路径未命中插件路由");
+  } else if (status === 401 || status === 403) {
+    reason = "gateway-auth";
+    hints.push("回调路径被 Gateway Auth / Zero Trust / 反向代理鉴权拦截");
+    hints.push("企业微信回调与健康探测必须直达 webhook 路径，不能要求 Authorization、Cookie 或交互登录");
+    hints.push("为 /wecom/*（以及 legacy /webhooks/app*）单独放行，或使用独立回调域名/端口");
+  } else if ([301, 302, 303, 307, 308].includes(status)) {
+    reason = "redirect-auth";
+    hints.push("回调路径发生了重定向，通常被登录页、SSO 或前端路由接管");
+    if (location) hints.push(`重定向目标：${location}`);
+    hints.push("请让 /wecom/*（以及 legacy /webhooks/app*）直接反代到 OpenClaw 网关，不要跳转到登录页或前端应用");
   } else if (status === 502 || status === 503 || status === 504) {
     reason = "gateway-unreachable";
     hints.push("网关端口不可达或反向代理后端异常");
@@ -253,6 +263,7 @@ function diagnoseLocalHealthResponse({ status, body, endpoint }) {
       endpoint,
       status,
       reason,
+      location: location || null,
       hints,
     },
   };
@@ -504,12 +515,17 @@ async function runAgentE2E({ config, args, configPath, accountId }) {
   }
 
   try {
-    const healthResponse = await fetchWithTimeout(endpoint, { method: "GET" }, Math.min(args.timeoutMs, 4000));
+    const healthResponse = await fetchWithTimeout(
+      endpoint,
+      { method: "GET", redirect: "manual" },
+      Math.min(args.timeoutMs, 4000),
+    );
     const healthBody = await healthResponse.text();
     const diagnosis = diagnoseLocalHealthResponse({
       status: healthResponse.status,
       body: healthBody,
       endpoint,
+      location: healthResponse.headers.get("location") || "",
     });
     checks.push(
       makeCheck(
@@ -525,12 +541,17 @@ async function runAgentE2E({ config, args, configPath, accountId }) {
 
   if (legacyAliasEndpoint) {
     try {
-      const healthResponse = await fetchWithTimeout(legacyAliasEndpoint, { method: "GET" }, Math.min(args.timeoutMs, 4000));
+      const healthResponse = await fetchWithTimeout(
+        legacyAliasEndpoint,
+        { method: "GET", redirect: "manual" },
+        Math.min(args.timeoutMs, 4000),
+      );
       const healthBody = await healthResponse.text();
       const diagnosis = diagnoseLocalHealthResponse({
         status: healthResponse.status,
         body: healthBody,
         endpoint: legacyAliasEndpoint,
+        location: healthResponse.headers.get("location") || "",
       });
       checks.push(
         makeCheck(

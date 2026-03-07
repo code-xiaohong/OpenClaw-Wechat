@@ -25,6 +25,8 @@ OpenClaw-Wechat 是一个面向 OpenClaw 的企业微信渠道插件，支持两
 - [消息能力矩阵](#消息能力矩阵)
 - [命令与会话策略](#命令与会话策略)
 - [环境变量速查](#环境变量速查)
+- [公网回调与 Gateway Auth](#公网回调与-gateway-auth)
+- [Webhook 与 Heartbeat 运维](#webhook-与-heartbeat-运维)
 - [与其他渠道并存建议](#与其他渠道并存建议)
 - [故障排查](#故障排查)
 - [开发与发布](#开发与发布)
@@ -809,6 +811,208 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | `WECOM_VOICE_TRANSCRIBE_FFMPEG_ENABLED` | 是否允许 ffmpeg 转码 |
 | `WECOM_VOICE_TRANSCRIBE_TRANSCODE_TO_WAV` | 是否优先转 WAV |
 
+## 公网回调与 Gateway Auth
+
+### 目标
+
+企业微信访问你的回调地址时，必须直接命中 OpenClaw 网关的 webhook 路由。  
+不能被这些中间层拦住：
+
+- Gateway Auth / Token 鉴权
+- 反向代理登录页 / SSO
+- 前端 WebUI 路由
+- 另一台静态站点或错误 upstream
+
+### 推荐架构
+
+| 场景 | 推荐做法 |
+|---|---|
+| 单域名 | 将 `/wecom/*`、legacy `/webhooks/app*`、`/webhooks/wecom*` 单独反代到 OpenClaw 网关端口 |
+| 有 Gateway Auth / Zero Trust | 对上述 webhook 路径做认证豁免，不要求 Authorization/Cookie |
+| 前端与网关共用域名 | 前端只接管 `/ui`、静态资源等路径，不要吞掉 `/wecom/*` |
+| 最稳妥 | 单独给企微回调使用一个子域名，只代理到 OpenClaw |
+
+### 最小验证
+
+| 探测 | 预期 |
+|---|---|
+| `curl -i http://127.0.0.1:8885/wecom/callback` | `200` + `wecom webhook ok` |
+| `curl -i http://127.0.0.1:8885/wecom/bot/callback` | `200` + `wecom bot webhook ok` |
+| `curl -i https://你的域名/wecom/callback` | 与本机一致，不应返回 HTML、401/403 或跳转 |
+| `curl -i https://你的域名/wecom/bot/callback` | 与本机一致，不应返回 HTML、401/403 或跳转 |
+
+### 常见返回值的含义
+
+| 现象 | 结论 | 处理 |
+|---|---|---|
+| `200` + `wecom webhook ok` / `wecom bot webhook ok` | 路由命中正常 | 继续做 URL 验证与企业微信后台配置 |
+| `200` + HTML | 请求被前端/WebUI 接走 | 单独为 `/wecom/*` 配反代，不要落到前端 |
+| `401/403` | 被 Gateway Auth / Zero Trust / 反代鉴权拦截 | 为 webhook 路径放行认证 |
+| `301/302/307/308` | 被登录页、SSO 或前端路由重定向 | 取消 webhook 路径重定向，直接代理到网关 |
+| `502/503/504` | OpenClaw 网关端口不可达 | 先修网关存活与 upstream |
+| `404` | 路径写错或插件路由没注册 | 核对 `webhookPath`、插件启用状态和 legacy alias |
+
+### 反代示例（Nginx）
+
+```nginx
+server {
+  listen 443 ssl http2;
+  server_name wecom.example.com;
+
+  location /wecom/ {
+    proxy_pass http://127.0.0.1:8885;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+  location /webhooks/app {
+    proxy_pass http://127.0.0.1:8885;
+  }
+
+  location /webhooks/wecom {
+    proxy_pass http://127.0.0.1:8885;
+  }
+}
+```
+
+### Cloudflare Tunnel 示例
+
+```yaml
+ingress:
+  - hostname: wecom.example.com
+    service: http://127.0.0.1:8885
+  - service: http_status:404
+```
+
+建议把企微回调放到单独子域名，不要和前端登录页共用同一套路由规则。
+
+### 自检建议
+
+```bash
+npm run wecom:selfcheck -- --all-accounts
+npm run wecom:agent:selfcheck -- --all-accounts
+npm run wecom:bot:selfcheck -- --all-accounts
+```
+
+现在自检会明确提示这些原因：
+
+- `route-not-found`
+- `html-fallback`
+- `gateway-auth`
+- `redirect-auth`
+- `gateway-unreachable`
+
+## Webhook 与 Heartbeat 运维
+
+### 适用场景
+
+| 需求 | 推荐方式 |
+|---|---|
+| 手工发一条群通知 | `openclaw message send --channel wecom --target webhook:<name>` |
+| 让 agent 处理后发到群 | `openclaw agent --deliver --reply-channel wecom --reply-to webhook:<name>` |
+| 固定周期发摘要/巡检结果 | OpenClaw `agents.defaults.heartbeat` + `target: "wecom"` + `to: "webhook:<name>"` |
+
+### 先配置命名 Webhook
+
+```json
+{
+  "channels": {
+    "wecom": {
+      "webhooks": {
+        "ops": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx",
+        "dev": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=yyy"
+      }
+    }
+  }
+}
+```
+
+多账号时，也可以挂到 `channels.wecom.accounts.<id>.webhooks`。
+
+### 直接发送
+
+```bash
+openclaw message send --channel wecom --target webhook:ops --message "服务已恢复正常"
+```
+
+### 让 Agent 结果投递到群
+
+```bash
+openclaw agent \
+  --message "整理今天的告警摘要" \
+  --deliver \
+  --reply-channel wecom \
+  --reply-to webhook:ops
+```
+
+### 用 Heartbeat 定时投递到群
+
+当前机器上的 OpenClaw `2026.3.2` 支持把 heartbeat 直接投递到指定渠道和目标。  
+对 WeCom Webhook 的推荐写法是：
+
+```json
+{
+  "channels": {
+    "wecom": {
+      "webhooks": {
+        "ops": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "heartbeat": {
+        "every": "30m",
+        "target": "wecom",
+        "to": "webhook:ops",
+        "prompt": "检查网关状态、最近告警和企业微信通道健康；如果一切正常，以三行内摘要输出。",
+        "ackMaxChars": 300
+      }
+    }
+  }
+}
+```
+
+多账号 webhook 场景可以再加：
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "heartbeat": {
+        "target": "wecom",
+        "to": "webhook:ops",
+        "accountId": "sales"
+      }
+    }
+  }
+}
+```
+
+说明：
+
+- `target: "wecom"` 指定投递到 WeCom 渠道
+- `to: "webhook:ops"` 指定 WeCom 渠道里的命名 webhook 目标
+- `accountId` 只在多账号场景需要
+- 如果不设 `target`，heartbeat 默认运行但不会向外发送消息
+
+### 运维常用命令
+
+```bash
+openclaw system heartbeat last
+openclaw config get agents.defaults.heartbeat
+openclaw status --deep
+openclaw logs --follow
+```
+
+需要手工触发一次立即执行：
+
+```bash
+openclaw system event --mode now --text "立即执行下一轮运维心跳"
+```
+
 ## 与其他渠道并存建议
 
 建议固定以下三点，减少“偶发无回复/冲突”风险：
@@ -827,6 +1031,8 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 |---|---|---|---|
 | 回调验证失败 | `curl https://域名/wecom/callback` | URL 不通、Token/AESKey 不一致 | 先通公网，再核对配置 |
 | `curl /wecom/callback` 返回 WebUI 页面 | 反向代理路由与回调路径 | 域名把 `/wecom/callback` 转发到了前端/静态站点 | 单独为 `/wecom/*` 配置反向代理到 OpenClaw 网关端口 |
+| `curl https://域名/wecom/callback` 返回 `401/403` | Gateway Auth / Zero Trust / 反代鉴权 | webhook 路径被要求登录或带 Token | 对 `/wecom/*`、`/webhooks/app*`、`/webhooks/wecom*` 做认证豁免 |
+| `curl https://域名/wecom/callback` 返回 `301/302/307/308` | 登录跳转 / SSO / 前端路由 | webhook 被重定向到登录页或前端 | 让 webhook 路径直接反代到 OpenClaw 网关 |
 | 能收到消息但不回复 | `openclaw gateway status` + `openclaw logs --follow` | 模型超时、会话排队、权限策略拦截 | 查看 dispatch/allowFrom/commands 日志 |
 | Bot 图片识别失败 | `wecom(bot): failed to fetch image url` | URL 失效、返回非图像流 | 已支持 octet-stream+解密兜底，先升级到最新版本 |
 | 语音转写失败 | `wecom: voice transcription failed` | 本地命令或模型路径错误 | 检查 `command`、`modelPath`、`ffmpeg` |
