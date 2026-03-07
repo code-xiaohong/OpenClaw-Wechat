@@ -6,6 +6,7 @@ OpenClaw-Wechat 是一个面向 OpenClaw 的企业微信渠道插件，支持两
 
 - `Agent 模式`：企业微信自建应用（XML 回调，经典模式）
 - `Bot 模式`：企业微信智能机器人 API 模式（JSON 回调，原生 stream）
+- `Webhook 目标出站`：将消息主动投递到企业微信群 Webhook 或命名 Webhook 目标
 
 适用于“个人微信扫码进入企业微信应用对话”、“企业内员工问答助手”、“多账户多业务线消息分流”等场景。
 
@@ -17,6 +18,7 @@ OpenClaw-Wechat 是一个面向 OpenClaw 的企业微信渠道插件，支持两
 - [5 分钟极速上手](#5-分钟极速上手)
 - [前置要求](#前置要求)
 - [安装与加载](#安装与加载)
+- [配置文件与路径职责](#配置文件与路径职责)
 - [快速开始](#快速开始)
 - [文档工具（WeCom Doc）](#文档工具wecom-doc)
 - [配置参考](#配置参考)
@@ -85,14 +87,36 @@ OpenClaw-Wechat 是一个面向 OpenClaw 的企业微信渠道插件，支持两
 ### Step 1. 安装插件
 
 ```bash
+openclaw plugins install @dingxiang-me/openclaw-wechat
+```
+
+如果你是在本地开发或要直接跑仓库源码，再用下面这套：
+
+```bash
 git clone https://github.com/dingxiang-me/OpenClaw-Wechat.git
 cd OpenClaw-Wechat
 npm install
 ```
 
-### Step 2. 在 OpenClaw 里加载插件
+### Step 2. 在 OpenClaw 里启用插件
 
-在 `~/.openclaw/openclaw.json` 增加：
+如果你是通过 `openclaw plugins install` 安装，在 `~/.openclaw/openclaw.json` 增加：
+
+```json
+{
+  "plugins": {
+    "enabled": true,
+    "allow": ["openclaw-wechat"],
+    "entries": {
+      "openclaw-wechat": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+如果你是源码路径加载，再使用下面这版（多一个 `load.paths`）：
 
 ```json
 {
@@ -201,7 +225,15 @@ npm run wecom:selfcheck -- --all-accounts
 
 ## 安装与加载
 
-### 方式 A：本地路径加载（推荐）
+### 方式 A：通过 OpenClaw 安装（推荐）
+
+```bash
+openclaw plugins install @dingxiang-me/openclaw-wechat
+```
+
+安装后插件会进入 `~/.openclaw/extensions/openclaw-wechat/`。这个目录主要用于 OpenClaw 运行时发现插件，通常**不建议**直接手改其中的 `package.json`、`package-lock.json`、`openclaw.plugin.json`。
+
+### 方式 B：本地路径加载（开发模式）
 
 ```bash
 git clone https://github.com/dingxiang-me/OpenClaw-Wechat.git
@@ -228,11 +260,45 @@ npm install
 }
 ```
 
-### 方式 B：npm 安装（包发布后）
+## 配置文件与路径职责
 
-```bash
-openclaw plugins install @dingxiang-me/openclaw-wechat
-```
+Issue #25 里问到的几个路径，职责完全不同。先把边界理清：
+
+| 路径 | 应不应该手改 | 作用 |
+|---|---|---|
+| `~/.openclaw/openclaw.json` | **应该** | OpenClaw 主配置入口。插件加载、`channels.wecom.*`、`bindings`、`env.vars` 都写这里 |
+| `~/.openclaw/extensions/openclaw-wechat/package.json` | 一般不要 | 已安装插件包的元数据，不是业务配置入口 |
+| `~/.openclaw/extensions/openclaw-wechat/openclaw.plugin.json` | 一般不要 | 插件 manifest / schema，供 OpenClaw 识别配置结构 |
+| `~/.openclaw/extensions/openclaw-wechat/package-lock.json` | 不要 | 安装锁文件，不承载运行配置 |
+| `~/.openclaw/agents/<id>/sessions/sessions.json` | 不要 | 运行时会话索引，属于状态数据，不是配置文件 |
+| `~/.openclaw/agents/<id>/sessions/*.jsonl` | 不要 | 会话 transcript / 运行产物 |
+
+Windows 对应关系也是同一套逻辑，例如：
+
+| Windows 示例路径 | 结论 |
+|---|---|
+| `D:\\Win\\AppData\\LocalLow\\.openclaw\\openclaw.json` | 这是主配置文件，参数加这里 |
+| `D:\\Win\\AppData\\LocalLow\\.openclaw\\extensions\\openclaw-wechat\\openclaw.plugin.json` | 这是插件 schema，不是让你填业务参数的地方 |
+| `D:\\Win\\AppData\\LocalLow\\.openclaw\\agents\\main\\sessions\\sessions.json` | 这是运行态索引，不要手动写参数 |
+
+### 参数应该放到哪里
+
+| 参数类型 | 推荐位置 |
+|---|---|
+| 插件启用 / 加载 | `plugins.enabled`、`plugins.allow`、`plugins.entries.openclaw-wechat` |
+| 企业微信业务配置 | `channels.wecom.*` |
+| 多账号配置 | `channels.wecom.accounts.<id>.*` |
+| 文档工具默认账号 | `channels.wecom.defaultAccount` |
+| 账号到 Agent 路由 | OpenClaw 根配置 `bindings` |
+| 敏感信息 | 优先 `env.vars.*` 或系统环境变量；其次写入 `openclaw.json` |
+
+### Control UI、文件、环境变量怎么分工
+
+| 方式 | 适合什么 |
+|---|---|
+| Control UI | 日常调整常规字段：`corpId`、`callbackToken`、`accounts.*`、`tools.doc` |
+| `openclaw.json` | 结构化配置、版本管理、多人协作、`bindings` |
+| `env.vars` / 系统环境变量 | Secret、代理、不同环境下的覆盖项 |
 
 ## 快速开始
 
@@ -592,6 +658,35 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 }
 ```
 
+### 使用 OpenClaw `bindings` 做账号级 Agent 路由
+
+`OpenClaw-Wechat` 不自己实现第二套路由规则；账号到 Agent 的稳定绑定，直接走 OpenClaw 核心 `bindings`。插件会把 `channel=wecom` 和 `accountId=<id>` 传给核心路由层。
+
+示例：
+
+```json
+{
+  "bindings": [
+    {
+      "match": {
+        "channel": "wecom",
+        "accountId": "sales"
+      },
+      "agentId": "sales"
+    },
+    {
+      "match": {
+        "channel": "wecom",
+        "accountId": "support"
+      },
+      "agentId": "support"
+    }
+  ]
+}
+```
+
+这套绑定优先级高于插件里的动态账号猜测，适合多账号、多业务线、同一 OpenClaw 上挂多个 WeCom 入口的场景。
+
 ## 消息能力矩阵
 
 ### Agent 模式
@@ -631,7 +726,8 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 
 ### 会话策略
 
-- 默认一用户一会话：`wecom:<userid>`
+- 默认账号一用户一会话：`wecom:<userid>`
+- 非默认账号一用户一会话：`wecom:<accountId>:<userid>`
 - 群聊可配置“仅 @ 才触发”，避免误触发
 
 ### 出站目标格式
@@ -733,6 +829,7 @@ node ./scripts/wecom-bot-selfcheck.mjs --help
 | Bot 图片识别失败 | `wecom(bot): failed to fetch image url` | URL 失效、返回非图像流 | 已支持 octet-stream+解密兜底，先升级到最新版本 |
 | 语音转写失败 | `wecom: voice transcription failed` | 本地命令或模型路径错误 | 检查 `command`、`modelPath`、`ffmpeg` |
 | 启动出现账号体检告警 | `wecom: account diagnosis ...` | 多账号 Token/Agent/路径存在冲突风险 | 按日志 `code` 与账户列表调整配置，优先处理 `warn` 级别 |
+| `wecom:selfcheck -- --all-accounts` 提示 `account '<id>' not found or incomplete` | 账号配置结构 | 旧版本自检脚本没完全识别 `agent` 子块、legacy inline 账户，或账号字段确实缺失 | 升级到最新版本后重跑；再核对 `channels.wecom.accounts.<id>` 是否包含完整 Agent 凭据 |
 | gettoken 失败 | 企业微信 API 返回码 | CorpId/Secret 错或网络受限 | 检查凭据/配置代理 |
 
 ### 推荐检查命令
@@ -840,6 +937,23 @@ npm run wecom:bot:selfcheck -- --all-accounts
 3. 日志里能看到 `chatId=...`（若没有 `chatId`，说明企业微信没有把群消息推送到该回调）
 
 若你在企微侧只能给群添加“机器人”而不能添加“自建应用”，这不是插件配置问题，属于企微产品形态差异；建议走 Bot 模式承载群聊，自建应用用于私聊/应用会话/主动推送。
+
+### Q7：多账号创建了两个 agent，但只有一个回复，或者会话串了？
+
+这是多账号隔离问题，不是“企微互相干扰”。
+
+从当前版本开始：
+
+1. Agent 会话 key 已按账号隔离
+2. `wecom:selfcheck -- --all-accounts` 会识别 `accounts.<id>`、`agent` 子块、legacy inline 账户
+3. `bindings.match.channel=wecom + accountId=<id>` 可以把不同账号稳定路由到不同 Agent
+
+建议排查顺序：
+
+1. 跑 `npm run wecom:selfcheck -- --all-accounts`
+2. 确认每个账号 `config.account` 都是 `OK`
+3. 在 `openclaw.json` 中为多账号配置 `bindings`
+4. 确认会话 key 形态符合预期：默认账号为 `wecom:<userid>`；非默认账号为 `wecom:<accountId>:<userid>`
 
 ## 版本与贡献
 

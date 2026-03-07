@@ -6,6 +6,7 @@ OpenClaw-Wechat is an OpenClaw channel plugin for Enterprise WeChat (WeCom), wit
 
 - `Agent mode`: WeCom custom app callback (XML)
 - `Bot mode`: WeCom intelligent bot API callback (JSON + native stream)
+- `Webhook outbound targets`: push messages to group webhooks or named webhook endpoints
 
 ## Table of Contents
 
@@ -15,6 +16,7 @@ OpenClaw-Wechat is an OpenClaw channel plugin for Enterprise WeChat (WeCom), wit
 - [5-Minute Quick Start](#5-minute-quick-start)
 - [Requirements](#requirements)
 - [Install and Load](#install-and-load)
+- [Config Paths and Ownership](#config-paths-and-ownership)
 - [Configuration Reference](#configuration-reference)
 - [Capability Matrix](#capability-matrix)
 - [Commands and Session Policy](#commands-and-session-policy)
@@ -78,14 +80,36 @@ This release is a major operations-focused upgrade: **WeCom now supports visual 
 ### 1) Install plugin
 
 ```bash
+openclaw plugins install @dingxiang-me/openclaw-wechat
+```
+
+For local development or direct source-path loading, use:
+
+```bash
 git clone https://github.com/dingxiang-me/OpenClaw-Wechat.git
 cd OpenClaw-Wechat
 npm install
 ```
 
-### 2) Load plugin in OpenClaw
+### 2) Enable plugin in OpenClaw
 
-Add to `~/.openclaw/openclaw.json`:
+If you installed via `openclaw plugins install`, add this to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "enabled": true,
+    "allow": ["openclaw-wechat"],
+    "entries": {
+      "openclaw-wechat": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+If you are loading from source path instead, use the version below with `load.paths`:
 
 ```json
 {
@@ -134,7 +158,15 @@ npm run wecom:bot:selfcheck -- --account default
 
 ## Install and Load
 
-### Local path loading (recommended)
+### OpenClaw-managed installation (recommended)
+
+```bash
+openclaw plugins install @dingxiang-me/openclaw-wechat
+```
+
+This installs the package under `~/.openclaw/extensions/openclaw-wechat/`. Treat that directory as installed runtime package content, not as your primary business configuration surface.
+
+### Local path loading (development mode)
 
 ```bash
 git clone https://github.com/dingxiang-me/OpenClaw-Wechat.git
@@ -144,11 +176,36 @@ npm install
 
 Configure plugin load path in `~/.openclaw/openclaw.json`.
 
-### npm installation
+## Config Paths and Ownership
 
-```bash
-openclaw plugins install @dingxiang-me/openclaw-wechat
-```
+The paths raised in issue #25 serve different purposes:
+
+| Path | Edit manually? | Purpose |
+|---|---|---|
+| `~/.openclaw/openclaw.json` | **Yes** | Main OpenClaw config. Put `plugins.*`, `channels.wecom.*`, `bindings`, and `env.vars` here |
+| `~/.openclaw/extensions/openclaw-wechat/package.json` | Usually no | Installed package metadata |
+| `~/.openclaw/extensions/openclaw-wechat/openclaw.plugin.json` | Usually no | Plugin manifest/schema used by OpenClaw |
+| `~/.openclaw/extensions/openclaw-wechat/package-lock.json` | No | Dependency lockfile |
+| `~/.openclaw/agents/<id>/sessions/sessions.json` | No | Runtime session index |
+| `~/.openclaw/agents/<id>/sessions/*.jsonl` | No | Runtime transcripts/state |
+
+Windows example mapping:
+
+| Windows path | Meaning |
+|---|---|
+| `D:\\Win\\AppData\\LocalLow\\.openclaw\\openclaw.json` | Main config file; this is where parameters belong |
+| `D:\\Win\\AppData\\LocalLow\\.openclaw\\extensions\\openclaw-wechat\\openclaw.plugin.json` | Plugin schema; not a business config file |
+| `D:\\Win\\AppData\\LocalLow\\.openclaw\\agents\\main\\sessions\\sessions.json` | Runtime state; do not use it as config |
+
+Recommended placement:
+
+| Parameter type | Where to put it |
+|---|---|
+| Plugin load / enable flags | `plugins.*` in `openclaw.json` |
+| WeCom business config | `channels.wecom.*` |
+| Multi-account settings | `channels.wecom.accounts.<id>.*` |
+| Account-to-agent routing | OpenClaw root `bindings` |
+| Secrets / environment-specific overrides | `env.vars.*` or system environment variables |
 
 ## Configuration Reference
 
@@ -165,6 +222,7 @@ openclaw plugins install @dingxiang-me/openclaw-wechat
 | `webhookPath` | string | `/wecom/callback` | Agent callback path (auto `/wecom/<accountId>/callback` when non-default account leaves it empty) |
 | `agent` | object | - | legacy layout: `agent.corpId/corpSecret/agentId` (equivalent to top-level Agent fields) |
 | `outboundProxy` | string | - | WeCom API proxy |
+| `defaultAccount` | string | - | preferred default account for tool usage and runtime fallback |
 | `webhooks` | object | - | named webhook target map (`{ "ops": "https://...key=xxx" }`) |
 | `accounts` | object | - | multi-account map (supports `accounts.<id>.bot` overrides) |
 
@@ -234,6 +292,31 @@ When multi-account is enabled, each account can override Bot callback credential
 | Agent streaming | `streaming.enabled`, `streaming.minChars`, `streaming.minIntervalMs` |
 | Observability | `observability.enabled`, `observability.logPayloadMeta` |
 
+### OpenClaw bindings for account-level routing
+
+Use OpenClaw core `bindings` for stable account-to-agent routing. The plugin exposes `channel=wecom` and `accountId=<id>` to the core router.
+
+```json
+{
+  "bindings": [
+    {
+      "match": {
+        "channel": "wecom",
+        "accountId": "sales"
+      },
+      "agentId": "sales"
+    },
+    {
+      "match": {
+        "channel": "wecom",
+        "accountId": "support"
+      },
+      "agentId": "support"
+    }
+  ]
+}
+```
+
 ## Capability Matrix
 
 ### Agent mode
@@ -271,7 +354,9 @@ Quoted reply context in Bot mode is also supported (`quote` is prepended into cu
 | `/reset` | reset conversation |
 | `/compact` | compact session (runtime-supported) |
 
-Session key policy: default is one-user-one-session (`wecom:<userid>`).
+Session key policy:
+- default account: `wecom:<userid>`
+- non-default accounts: `wecom:<accountId>:<userid>`
 
 Outbound target formats:
 - `user`: `wecom:alice` / `user:alice`
@@ -357,6 +442,7 @@ See [`docs/troubleshooting/coexistence.md`](./docs/troubleshooting/coexistence.m
 | Bot image parse failed | `wecom(bot): failed to fetch image url` | expired URL/non-image stream |
 | Voice transcription failed | local command/model path | whisper/ffmpeg environment issue |
 | Startup logs show `wecom: account diagnosis ...` | diagnosis code + account list | multi-account token/agent/path conflict risk |
+| `wecom:selfcheck -- --all-accounts` reports `account '<id>' not found or incomplete` | account layout | older selfcheck logic did not fully recognize nested `agent` blocks or legacy inline accounts, or the account is actually incomplete |
 | gettoken failed | WeCom API result | wrong credentials or network/proxy |
 
 Useful commands:
@@ -423,6 +509,20 @@ Quick checks:
 1. Local: `curl http://127.0.0.1:8885/wecom/callback`
 2. Public: `curl -i https://<domain>/wecom/callback`
 3. Proxy rules: route `/wecom/*` to OpenClaw gateway port, not WebUI.
+
+### Why do two WeCom accounts seem to share one agent/session?
+This is a multi-account routing problem, not expected channel interference.
+
+Current behavior:
+1. Agent session keys are account-aware.
+2. `npm run wecom:selfcheck -- --all-accounts` recognizes `accounts.<id>`, nested `agent` blocks, and legacy inline accounts.
+3. Stable account-to-agent mapping should be expressed with OpenClaw `bindings`.
+
+Recommended verification order:
+1. Run `npm run wecom:selfcheck -- --all-accounts`
+2. Ensure every account shows `config.account :: OK`
+3. Add explicit `bindings` for each WeCom `accountId`
+4. Verify session keys are `wecom:<userid>` for default account and `wecom:<accountId>:<userid>` for non-default accounts
 
 ### How to enable self-built app group chat without requiring `@`?
 First, separate the two WeCom integration types:

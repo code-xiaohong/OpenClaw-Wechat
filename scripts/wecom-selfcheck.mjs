@@ -4,9 +4,55 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ProxyAgent } from "undici";
+import {
+  collectWecomEnvAccountIds as collectSharedWecomEnvAccountIds,
+  createRequireEnv as createSharedRequireEnv,
+  normalizeAccountConfig as normalizeSharedAccountConfig,
+  readAccountConfigFromEnv as readSharedAccountConfigFromEnv,
+} from "../src/wecom/account-config-core.js";
 
 const PROXY_DISPATCHER_CACHE = new Map();
 const INVALID_PROXY_CACHE = new Set();
+const LEGACY_INLINE_ACCOUNT_RESERVED_KEYS = new Set([
+  "name",
+  "enabled",
+  "corpId",
+  "corpSecret",
+  "agentId",
+  "callbackToken",
+  "token",
+  "callbackAesKey",
+  "encodingAesKey",
+  "webhookPath",
+  "outboundProxy",
+  "proxyUrl",
+  "proxy",
+  "webhooks",
+  "allowFrom",
+  "allowFromRejectMessage",
+  "rejectUnauthorizedMessage",
+  "adminUsers",
+  "commandAllowlist",
+  "commandBlockMessage",
+  "commands",
+  "workspaceTemplate",
+  "groupChat",
+  "dynamicAgent",
+  "dynamicAgents",
+  "dm",
+  "debounce",
+  "streaming",
+  "bot",
+  "delivery",
+  "webhookBot",
+  "stream",
+  "observability",
+  "voiceTranscription",
+  "defaultAccount",
+  "tools",
+  "accounts",
+  "agent",
+]);
 
 function parseArgs(argv) {
   const out = {
@@ -356,71 +402,41 @@ function buildPluginChecks(config) {
   return checks;
 }
 
+function listLegacyInlineAccountIds(channelConfig) {
+  if (!channelConfig || typeof channelConfig !== "object") return [];
+  const ids = [];
+  for (const [rawKey, value] of Object.entries(channelConfig)) {
+    const normalizedKey = normalizeAccountId(rawKey);
+    if (!normalizedKey || LEGACY_INLINE_ACCOUNT_RESERVED_KEYS.has(normalizedKey)) continue;
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    ids.push(normalizedKey);
+  }
+  return Array.from(new Set(ids));
+}
+
 function readAccountConfigFromEnv(envVars, accountId) {
-  const normalizedId = normalizeAccountId(accountId);
-  const prefix = normalizedId === "default" ? "WECOM" : `WECOM_${normalizedId.toUpperCase()}`;
-  const readVar = (suffix) =>
-    envVars?.[`${prefix}_${suffix}`] ??
-    (normalizedId === "default" ? envVars?.[`WECOM_${suffix}`] : undefined) ??
-    process.env[`${prefix}_${suffix}`] ??
-    (normalizedId === "default" ? process.env[`WECOM_${suffix}`] : undefined);
-
-  const corpId = String(readVar("CORP_ID") ?? "").trim();
-  const corpSecret = String(readVar("CORP_SECRET") ?? "").trim();
-  const agentId = asNumber(readVar("AGENT_ID"));
-  const callbackToken = pickFirstNonEmptyString(readVar("CALLBACK_TOKEN"), readVar("TOKEN"));
-  const callbackAesKey = pickFirstNonEmptyString(readVar("CALLBACK_AES_KEY"), readVar("ENCODING_AES_KEY"));
-  const webhookPath = String(readVar("WEBHOOK_PATH") ?? "/wecom/callback").trim() || "/wecom/callback";
-  const webhooks = normalizeWebhookTargetMap(readVar("WEBHOOK_TARGETS"), readVar("WEBHOOKS"));
-  const outboundProxy = String(
-    readVar("PROXY") ??
-      (normalizedId === "default"
-        ? process.env.HTTPS_PROXY
-        : envVars?.WECOM_PROXY ?? process.env.WECOM_PROXY ?? process.env.HTTPS_PROXY) ??
-      "",
-  ).trim();
-  const enabled = !isFalseLike(readVar("ENABLED"));
-
-  if (!corpId || !corpSecret || !agentId) return null;
+  const normalized = readSharedAccountConfigFromEnv({
+    envVars,
+    accountId,
+    requireEnv: createSharedRequireEnv(process.env),
+    normalizeWecomWebhookTargetMap: normalizeWebhookTargetMap,
+  });
+  if (!normalized) return null;
   return {
-    accountId: normalizedId,
-    corpId,
-    corpSecret,
-    agentId,
-    callbackToken,
-    callbackAesKey,
-    webhookPath,
-    webhooks: Object.keys(webhooks).length > 0 ? webhooks : undefined,
-    outboundProxy: outboundProxy || undefined,
-    enabled,
+    ...normalized,
     source: "env",
   };
 }
 
 function normalizeResolvedAccount(raw, accountId, source) {
-  if (!raw || typeof raw !== "object") return null;
-  const resolvedId = normalizeAccountId(accountId);
-  const corpId = String(raw.corpId ?? "").trim();
-  const corpSecret = String(raw.corpSecret ?? "").trim();
-  const agentId = asNumber(raw.agentId);
-  const callbackToken = pickFirstNonEmptyString(raw.callbackToken, raw.token);
-  const callbackAesKey = pickFirstNonEmptyString(raw.callbackAesKey, raw.encodingAesKey);
-  const webhookPath = String(raw.webhookPath ?? "/wecom/callback").trim() || "/wecom/callback";
-  const webhooks = normalizeWebhookTargetMap(raw.webhooks);
-  const outboundProxy = String(raw.outboundProxy ?? raw.proxyUrl ?? raw.proxy ?? "").trim();
-  const enabled = raw.enabled !== false;
-  if (!corpId || !corpSecret || !agentId) return null;
+  const normalized = normalizeSharedAccountConfig({
+    raw,
+    accountId,
+    normalizeWecomWebhookTargetMap: normalizeWebhookTargetMap,
+  });
+  if (!normalized) return null;
   return {
-    accountId: resolvedId,
-    corpId,
-    corpSecret,
-    agentId,
-    callbackToken,
-    callbackAesKey,
-    webhookPath,
-    webhooks: Object.keys(webhooks).length > 0 ? webhooks : undefined,
-    outboundProxy: outboundProxy || undefined,
-    enabled,
+    ...normalized,
     source,
   };
 }
@@ -459,6 +475,12 @@ function resolveAccountFromConfig(config, accountId, options = {}) {
   );
   if (byAccounts) return attachWebhookTargets(byAccounts);
 
+  const byLegacyInline =
+    normalizedId !== "default" && !LEGACY_INLINE_ACCOUNT_RESERVED_KEYS.has(normalizedId)
+      ? normalizeResolvedAccount(channelConfig?.[normalizedId], normalizedId, `channels.wecom.${normalizedId}`)
+      : null;
+  if (byLegacyInline) return attachWebhookTargets(byLegacyInline);
+
   const byEnv = readAccountConfigFromEnv(envVars, normalizedId);
   if (byEnv) return attachWebhookTargets(byEnv);
 
@@ -492,19 +514,12 @@ function discoverAccountIds(config) {
       ids.add(normalizeAccountId(key));
     }
   }
-
-  const harvest = (obj) => {
-    if (!obj || typeof obj !== "object") return;
-    for (const key of Object.keys(obj)) {
-      const m = key.match(/^WECOM_([A-Z0-9]+)_CORP_ID$/);
-      if (!m) continue;
-      if (m[1] === "CORP") ids.add("default");
-      else ids.add(m[1].toLowerCase());
-    }
-  };
-
-  harvest(envVars);
-  harvest(process.env);
+  for (const key of listLegacyInlineAccountIds(channelConfig)) {
+    ids.add(key);
+  }
+  for (const key of collectSharedWecomEnvAccountIds({ envVars, processEnv: process.env })) {
+    ids.add(normalizeAccountId(key));
+  }
 
   if (ids.size === 0) ids.add("default");
 

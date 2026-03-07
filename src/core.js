@@ -100,8 +100,13 @@ const LEGACY_INLINE_ACCOUNT_RESERVED_KEYS = new Set([
 
 const inboundMessageDedupe = new Map();
 
-export function buildWecomSessionId(userId) {
-  return `wecom:${String(userId ?? "").trim().toLowerCase()}`;
+export function buildWecomSessionId(userId, accountId = "default") {
+  const normalizedUserId = String(userId ?? "").trim().toLowerCase();
+  const normalizedAccountId = String(accountId ?? "default").trim().toLowerCase() || "default";
+  if (normalizedAccountId === "default") {
+    return `wecom:${normalizedUserId}`;
+  }
+  return `wecom:${normalizedAccountId}:${normalizedUserId}`;
 }
 
 export function buildInboundDedupeKey(msgObj, namespace = "default") {

@@ -104,7 +104,7 @@ export function createWecomAgentInboundProcessor(deps = {}) {
     });
 
     try {
-      const baseSessionId = buildWecomSessionId(fromUser);
+      const baseSessionId = buildWecomSessionId(fromUser, config.accountId || accountId || "default");
       let sessionId = baseSessionId;
       let routedAgentId = "";
       const fromAddress = `wecom:${fromUser}`;

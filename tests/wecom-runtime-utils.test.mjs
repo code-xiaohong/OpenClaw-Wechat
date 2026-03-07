@@ -13,6 +13,7 @@ import {
 
 test("buildWecomBotSessionId normalizes sender id", () => {
   assert.equal(buildWecomBotSessionId(" Alice "), "wecom-bot:alice");
+  assert.equal(buildWecomBotSessionId(" Alice ", "sales"), "wecom-bot:sales:alice");
 });
 
 test("requireEnv reads env value and supports fallback", () => {

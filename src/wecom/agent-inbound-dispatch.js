@@ -125,7 +125,7 @@ export function createWecomAgentInboundDispatcher({
 
     const fromUser = String(basePayload?.fromUser ?? "");
     if (!fromUser) return false;
-    const inboundSessionId = buildWecomSessionId(fromUser);
+    const inboundSessionId = buildWecomSessionId(fromUser, basePayload?.accountId);
     const taskPayload = handler.buildTaskPayload(inbound);
 
     enqueueInboundTask({

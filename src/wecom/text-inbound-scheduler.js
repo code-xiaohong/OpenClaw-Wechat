@@ -50,7 +50,7 @@ export function createWecomTextInboundScheduler({
   }
 
   function dispatchTextPayload(api, payload, reason = "direct") {
-    const sessionId = buildWecomSessionId(payload?.fromUser);
+    const sessionId = buildWecomSessionId(payload?.fromUser, payload?.accountId);
     messageProcessLimiter
       .execute(() =>
         executeInboundTaskWithSessionQueue({

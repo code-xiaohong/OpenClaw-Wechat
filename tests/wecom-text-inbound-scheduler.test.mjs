@@ -5,6 +5,7 @@ import { createWecomTextInboundScheduler } from "../src/wecom/text-inbound-sched
 
 function createScheduler(overrides = {}) {
   const handled = [];
+  const queuedSessionIds = [];
   const scheduler = createWecomTextInboundScheduler({
     resolveWecomGroupChatPolicy: () => ({ mentionPatterns: ["@bot"] }),
     shouldStripWecomGroupMentions: () => false,
@@ -20,13 +21,16 @@ function createScheduler(overrides = {}) {
         return fn();
       },
     },
-    executeInboundTaskWithSessionQueue: async ({ task }) => task(),
+    executeInboundTaskWithSessionQueue: async ({ task, sessionId }) => {
+      queuedSessionIds.push(sessionId);
+      return task();
+    },
     getProcessInboundMessage: () => async (payload) => {
       handled.push(payload);
     },
     ...overrides,
   });
-  return { scheduler, handled };
+  return { scheduler, handled, queuedSessionIds };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -91,4 +95,22 @@ test("group mention stripping affects command probe", async () => {
 
   assert.equal(handled.length, 1);
   assert.equal(handled[0].content, "@bot /help");
+});
+
+test("dispatchTextPayload uses account-aware session key for non-default account", async () => {
+  const { scheduler, handled, queuedSessionIds } = createScheduler({
+    resolveWecomTextDebouncePolicy: () => ({ enabled: false, windowMs: 5000, maxBatch: 10 }),
+    buildWecomSessionId: (fromUser, accountId) => `wecom:${accountId}:${fromUser}`,
+  });
+  const api = { logger: { info() {}, warn() {}, error() {} } };
+
+  scheduler.scheduleTextInboundProcessing(
+    api,
+    { accountId: "sales", fromUser: "u1", chatId: "", isGroupChat: false, msgId: "m1" },
+    "hello",
+  );
+  await tick();
+
+  assert.deepEqual(queuedSessionIds, ["wecom:sales:u1"]);
+  assert.equal(handled[0].content, "hello");
 });

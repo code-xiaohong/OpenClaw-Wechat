@@ -5,6 +5,7 @@ import * as core from "../src/core.js";
 
 test("buildWecomSessionId normalizes user id", () => {
   assert.equal(core.buildWecomSessionId(" DingXiang "), "wecom:dingxiang");
+  assert.equal(core.buildWecomSessionId(" DingXiang ", "sales"), "wecom:sales:dingxiang");
   assert.equal(core.buildWecomSessionId(""), "wecom:");
 });
 

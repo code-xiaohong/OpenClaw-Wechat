@@ -4,6 +4,11 @@ import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  createRequireEnv as createSharedRequireEnv,
+  normalizeAccountConfig as normalizeSharedAccountConfig,
+  readAccountConfigFromEnv as readSharedAccountConfigFromEnv,
+} from "../src/wecom/account-config-core.js";
 import { buildDefaultAgentWebhookPath, buildLegacyAgentWebhookPath } from "../src/wecom/account-paths.js";
 
 function parseArgs(argv) {
@@ -221,68 +226,49 @@ function resolveAccountFromConfig(config, accountId) {
   const normalizedId = normalizeAccountId(accountId);
   const channelConfig = config?.channels?.wecom ?? {};
   const envVars = config?.env?.vars ?? {};
+  const requireEnv = createSharedRequireEnv(process.env);
 
-  const pickFromRaw = (raw, resolvedId) => {
-    if (!raw || typeof raw !== "object") return null;
-    const corpId = String(raw.corpId ?? "").trim();
-    const corpSecret = String(raw.corpSecret ?? "").trim();
-    const agentId = asNumber(raw.agentId);
-    const callbackToken = pickFirstNonEmptyString(raw.callbackToken, raw.token);
-    const callbackAesKey = pickFirstNonEmptyString(raw.callbackAesKey, raw.encodingAesKey);
-    const webhookPath = pickFirstNonEmptyString(raw.webhookPath, "/wecom/callback");
-    const enabled = raw.enabled !== false;
-    if (!corpId || !corpSecret || !agentId) return null;
-    return {
+  const pickFromRaw = (raw, resolvedId, source) => {
+    const normalized = normalizeSharedAccountConfig({
+      raw,
       accountId: resolvedId,
-      corpId,
-      corpSecret,
-      agentId,
-      callbackToken,
-      callbackAesKey,
-      webhookPath,
-      enabled,
-      source: `channels.wecom${resolvedId === "default" ? "" : `.accounts.${resolvedId}`}`,
+      normalizeWecomWebhookTargetMap: () => ({}),
+    });
+    if (!normalized) return null;
+    return {
+      ...normalized,
+      source,
     };
   };
 
   const readEnv = (targetAccountId) => {
-    const id = normalizeAccountId(targetAccountId);
-    const prefix = id === "default" ? "WECOM" : `WECOM_${id.toUpperCase()}`;
-    const readVar = (suffix) =>
-      envVars?.[`${prefix}_${suffix}`] ??
-      (id === "default" ? envVars?.[`WECOM_${suffix}`] : undefined) ??
-      process.env[`${prefix}_${suffix}`] ??
-      (id === "default" ? process.env[`WECOM_${suffix}`] : undefined);
-
-    const corpId = String(readVar("CORP_ID") ?? "").trim();
-    const corpSecret = String(readVar("CORP_SECRET") ?? "").trim();
-    const agentId = asNumber(readVar("AGENT_ID"));
-    const callbackToken = pickFirstNonEmptyString(readVar("CALLBACK_TOKEN"), readVar("TOKEN"));
-    const callbackAesKey = pickFirstNonEmptyString(readVar("CALLBACK_AES_KEY"), readVar("ENCODING_AES_KEY"));
-    const webhookPath = pickFirstNonEmptyString(readVar("WEBHOOK_PATH"), "/wecom/callback");
-    const enabled = !isFalseLike(readVar("ENABLED"));
-    if (!corpId || !corpSecret || !agentId) return null;
+    const normalized = readSharedAccountConfigFromEnv({
+      envVars,
+      accountId: targetAccountId,
+      requireEnv,
+      normalizeWecomWebhookTargetMap: () => ({}),
+    });
+    if (!normalized) return null;
     return {
-      accountId: id,
-      corpId,
-      corpSecret,
-      agentId,
-      callbackToken,
-      callbackAesKey,
-      webhookPath,
-      enabled,
+      ...normalized,
       source: "env",
     };
   };
 
   if (normalizedId === "default") {
-    return pickFromRaw(channelConfig, "default") || readEnv("default");
+    return (
+      pickFromRaw(channelConfig, "default", "channels.wecom") ||
+      pickFromRaw(channelConfig?.accounts?.default, "default", "channels.wecom.accounts.default") ||
+      readEnv("default")
+    );
   }
 
   return (
-    pickFromRaw(channelConfig?.accounts?.[normalizedId], normalizedId) ||
+    pickFromRaw(channelConfig?.accounts?.[normalizedId], normalizedId, `channels.wecom.accounts.${normalizedId}`) ||
+    pickFromRaw(channelConfig?.[normalizedId], normalizedId, `channels.wecom.${normalizedId}`) ||
     readEnv(normalizedId) ||
-    pickFromRaw(channelConfig, "default") ||
+    pickFromRaw(channelConfig, "default", "channels.wecom") ||
+    pickFromRaw(channelConfig?.accounts?.default, "default", "channels.wecom.accounts.default") ||
     readEnv("default")
   );
 }

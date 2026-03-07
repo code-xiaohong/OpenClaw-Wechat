@@ -113,3 +113,71 @@ test("agent webhook handler health reflects signed account availability", async 
     assert.equal(getBody(), "wecom webhook not configured");
   }
 });
+
+test("agent webhook handler rejects unsupported methods before reading body", async () => {
+  const { res, getHeader, getBody } = createResponseMock();
+  const handler = createWecomAgentWebhookHandler({
+    api: { logger: {} },
+    accounts: [{ accountId: "default", callbackToken: "t", callbackAesKey: "k" }],
+    readRequestBody: async () => {
+      throw new Error("should not read body");
+    },
+    parseIncomingXml: () => ({}),
+    pickAccountBySignature: () => null,
+    decryptWecom: () => ({ msg: "" }),
+    markInboundMessageSeen: () => true,
+    extractWecomXmlInboundEnvelope: () => ({}),
+    buildWecomSessionId: () => "wecom:test",
+    scheduleTextInboundProcessing: () => {},
+    messageProcessLimiter: { execute: async (fn) => fn() },
+    executeInboundTaskWithSessionQueue: async ({ task }) => task(),
+    processInboundMessage: async () => {},
+  });
+
+  await handler({ method: "PUT", url: "/wecom/callback" }, res);
+  assert.equal(res.statusCode, 405);
+  assert.equal(getHeader("allow"), "GET, POST");
+  assert.equal(getBody(), "");
+});
+
+test("bot webhook handler returns 400 for invalid request body", async () => {
+  const { res, getBody, getHeader } = createResponseMock();
+  const handler = createWecomBotWebhookHandler({
+    api: { logger: { warn() {} } },
+    botConfigs: [
+      {
+        accountId: "default",
+        token: "token",
+        encodingAesKey: "a".repeat(43),
+        placeholderText: "处理中",
+        streamExpireMs: 600000,
+      },
+    ],
+    normalizedPath: "/wecom/bot/callback",
+    readRequestBody: async () => "{bad-json",
+    parseIncomingJson: () => {
+      throw new Error("bad json");
+    },
+    computeMsgSignature: () => "",
+    decryptWecom: () => ({ msg: "" }),
+    parseWecomBotInboundMessage: () => null,
+    describeWecomBotParsedMessage: () => "n/a",
+    cleanupExpiredBotStreams: () => {},
+    getBotStream: () => null,
+    buildWecomBotEncryptedResponse: () => "{}",
+    markInboundMessageSeen: () => true,
+    buildWecomBotSessionId: () => "wecom-bot:test",
+    createBotStream: () => ({}),
+    upsertBotResponseUrlCache: () => {},
+    messageProcessLimiter: { execute: async (fn) => fn() },
+    executeInboundTaskWithSessionQueue: async ({ task }) => task(),
+    processBotInboundMessage: async () => {},
+    deliverBotReplyText: async () => ({ ok: true }),
+    finishBotStream: () => ({}),
+  });
+
+  await handler({ method: "POST", url: "/wecom/bot/callback" }, res);
+  assert.equal(res.statusCode, 400);
+  assert.equal(getHeader("content-type"), "text/plain; charset=utf-8");
+  assert.equal(getBody(), "Invalid request body");
+});

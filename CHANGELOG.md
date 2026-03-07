@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-03-08
+
+### Fixed
+- 修复多账号 Agent 会话隔离：默认账号继续使用 `wecom:<userid>`，非默认账号改为 `wecom:<accountId>:<userid>`，避免不同企业微信账号串到同一会话
+- 修复 `wecom:selfcheck -- --all-accounts` 与运行时配置解析不一致的问题，统一支持 `channels.wecom.accounts.<id>`、`accounts.<id>.agent` 与 legacy inline 多账号写法
+- 修复运行时默认账号回退：显式账号缺失时优先回退到 `channels.wecom.defaultAccount`，再回退到 `default` / 第一个可用账号
+- 修复 Agent / webhook 兼容性边界：Agent webhook 非法方法返回更明确，Bot 非法请求体返回稳定 `400`
+
+### Added
+- 新增多账号回归测试，覆盖会话 key 生成、`selfcheck` 多账号发现、legacy inline 账号识别与 webhook 边界行为
+- README（中英文）新增配置文件路径职责、OpenClaw `bindings` 账号级路由示例和多账号排障说明
+
 ## [1.9.0] - 2026-03-08
 
 ### Added

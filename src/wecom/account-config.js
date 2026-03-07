@@ -144,9 +144,12 @@ export function createWecomAccountRegistry({
       wecomAccounts.set(accountId, config);
     }
 
-    defaultAccountId = wecomAccounts.has("default")
-      ? "default"
-      : (Array.from(wecomAccounts.keys())[0] ?? "default");
+    const configuredDefaultAccountId = normalizeAccountId(channelConfig?.defaultAccount ?? "default");
+    defaultAccountId = wecomAccounts.has(configuredDefaultAccountId)
+      ? configuredDefaultAccountId
+      : wecomAccounts.has("default")
+        ? "default"
+        : (Array.from(wecomAccounts.keys())[0] ?? "default");
 
     return wecomAccounts;
   }
@@ -157,6 +160,10 @@ export function createWecomAccountRegistry({
 
     if (accountMap.has(targetAccountId)) {
       return accountMap.get(targetAccountId);
+    }
+
+    if (targetAccountId !== defaultAccountId && accountMap.has(defaultAccountId)) {
+      return accountMap.get(defaultAccountId);
     }
 
     if (targetAccountId !== "default" && accountMap.has("default")) {

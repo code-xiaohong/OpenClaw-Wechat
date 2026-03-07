@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createWecomAgentInboundDispatcher } from "../src/wecom/agent-inbound-dispatch.js";
 
-function createContext() {
+function createContext(overrides = {}) {
   const scheduled = [];
   const queuedCalls = [];
   const processedPayloads = [];
@@ -36,6 +36,7 @@ function createContext() {
     processInboundMessage: async (payload) => {
       processedPayloads.push(payload);
     },
+    ...overrides,
   });
 
   return {
@@ -103,6 +104,21 @@ test("dispatchWecomAgentInbound enqueues event task", async () => {
   assert.equal(processedPayloads.length, 1);
   assert.equal(processedPayloads[0].msgType, "event");
   assert.equal(processedPayloads[0].eventType, "enter_agent");
+});
+
+test("dispatchWecomAgentInbound isolates non-default account sessions", async () => {
+  const { dispatch, queuedCalls } = createContext({
+    buildWecomSessionId: (fromUser, accountId) => `wecom:${accountId}:${fromUser}`,
+  });
+  const handled = dispatch({
+    inbound: { msgType: "image", mediaId: "m1", picUrl: "https://example.com/pic.jpg" },
+    basePayload: { fromUser: "u1", accountId: "sales" },
+  });
+
+  assert.equal(handled, true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(queuedCalls[1], { sessionId: "wecom:sales:u1", isBot: false });
 });
 
 test("dispatchWecomAgentInbound returns false for unsupported message type", () => {
